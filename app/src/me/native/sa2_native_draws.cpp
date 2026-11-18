@@ -115,6 +115,15 @@ REXCVAR_DEFINE_BOOL(ds2_pipeline_cache_copy_off_ring, false, "SA2 renderer",
                     "writer thread instead of the ring thread; the ring thread only hands over the prewarm list. "
                     "Each save logs the time it took on the ring thread (false = as before)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2-deko3d (2026-11-18, ds2_007): the ring thread part took 9-11 ms, but each hitch lasted as long as the writer
+// thread's file write (447 -> 452.7 ms, 664 -> 673.9, 2270 -> 2277.0) and the game's reads waited meanwhile (954 ms).
+REXCVAR_DEFINE_INT32(ds2_pipeline_cache_write_chunk_kb, 0, "SA2 renderer",
+                     "Native renderer: the pipeline cache file is written in parts of this many KB, flushed one by "
+                     "one with ds2_pipeline_cache_write_pause_ms between them (0 = one write, as before)")
+    .range(0, 16384);
+REXCVAR_DEFINE_INT32(ds2_pipeline_cache_write_pause_ms, 5, "SA2 renderer",
+                     "Pause between the parts of ds2_pipeline_cache_write_chunk_kb, in ms")
+    .range(0, 1000);
 
 #include "../me_platform_compat.h"  // banjo-nx: NEON on aarch64, SIMDe elsewhere
 
@@ -8669,6 +8678,23 @@ class DrawsVulkanImpl final : public DrawsVulkan {
 #endif
   }
 
+  // ds2_pipeline_cache_write_chunk_kb: the cache goes to the SD card in parts with a pause between them, so the
+  // game's own file accesses (and the frame) are not held for the whole ~12 MB write.
+  static bool WriteInParts(std::ofstream& file, const uint8_t* data, size_t bytes) {
+    const size_t part = size_t(REXCVAR_GET(ds2_pipeline_cache_write_chunk_kb)) << 10;
+    if (!part) {
+      return bool(file.write(reinterpret_cast<const char*>(data), std::streamsize(bytes)));
+    }
+    for (size_t done = 0; done < bytes; done += part) {
+      const size_t now = std::min(part, bytes - done);
+      if (!file.write(reinterpret_cast<const char*>(data + done), std::streamsize(now)) || !file.flush()) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(REXCVAR_GET(ds2_pipeline_cache_write_pause_ms)));
+    }
+    return true;
+  }
+
   // cache/sa2_native_pipelines.bin with the list and the cache, written to a temporary file that is then
   // renamed. Writer thread only. The first time it is written, the two older files are deleted if present.
   void WriteFilePipelines() {
@@ -8689,7 +8715,7 @@ class DrawsVulkanImpl final : public DrawsVulkan {
           !file.write(reinterpret_cast<const char*>(&bytes_list), 8) ||
           !file.write(reinterpret_cast<const char*>(&bytes_cache), 8) ||
           !file.write(reinterpret_cast<const char*>(written_list_.data()), std::streamsize(bytes_list)) ||
-          !file.write(reinterpret_cast<const char*>(written_cache_.data()), std::streamsize(bytes_cache))) {
+          !WriteInParts(file, written_cache_.data(), bytes_cache)) {
         return;
       }
     }
