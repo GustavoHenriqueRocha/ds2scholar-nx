@@ -64,6 +64,8 @@ DkQueue Queue();
 uint64_t CurrentOrder();
 // Submits a command list and signals the order's fence. Returns its order.
 uint64_t Submit(DkCmdList list);
+// Submits and flushes without a fence (ds2_native_partial_send): the work belongs to the next Submit's order.
+void SubmitUnfenced(DkCmdList list);
 // Highest order the GPU has completed (polls fences, never waits).
 uint64_t CompletedOrder();
 // Waits until `order` is complete. false on timeout or a queue in error state (logged once).
@@ -88,6 +90,8 @@ Block MakeBlock(uint32_t size, uint32_t flags, const char* what);
 void FreeBlock(Block& block, uint64_t after_order);
 // CpuCached blocks: makes CPU writes visible to the GPU (no-op for CpuUncached).
 void FlushCpu(const Block& block, uint32_t offset, uint32_t size);
+// CpuCached blocks the GPU wrote (kReadback): drops stale CPU cache lines before reading, after the fence.
+void InvalidateCpu(const Block& block, uint32_t offset, uint32_t size);
 constexpr uint32_t kCpuToGpu = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
 constexpr uint32_t kReadback = DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached;
 
@@ -169,7 +173,7 @@ constexpr uint32_t kDescriptorsDraws3D = 4096;
 constexpr uint32_t kDescriptorsDrawsCube = 4112;
 constexpr uint32_t kDescriptorsDraws = 4176;
 constexpr uint32_t kDescriptorsPersistentEnd = 12288;
-constexpr uint32_t kImageDescriptors = 16384;
+constexpr uint32_t kImageDescriptors = 36864;  // 8192 transient per slot with 3 slots (Vulkan budget: 2048)
 constexpr uint32_t kSamplerDescriptors = 1024;  // the draws' samplers 0-511, the rest AllocSamplerDescriptor
 constexpr uint32_t kSamplersDraws = 512;
 
@@ -284,10 +288,12 @@ void Blit(DkCmdBuf cmd, ImageId src, const DkImageRect& src_rect, ImageId dst, c
 bool Has2D(ImageId id);
 // Multisample to single sample, whole image only (dkCmdBufResolveImage takes no rectangle).
 void ResolveWhole(DkCmdBuf cmd, ImageId src, ImageId dst);
-// Image <-> linear buffer (read-backs, texture uploads). row_bytes / rows describe the buffer (0 = packed).
+// Image <-> linear buffer (read-backs, texture uploads). row_bytes = bytes per row and
+// layer_bytes = bytes per layer/slice of the buffer, 0 = packed (DkCopyBuf rowLength / imageHeight: dk_image.cpp
+// 734-738, imageHeight is a byte stride, not a row count).
 void CopyImageToBuffer(DkCmdBuf cmd, ImageId src, const DkImageRect& rect, DkGpuAddr dst, uint32_t row_bytes = 0,
-                       uint32_t rows = 0);
-void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t rows, ImageId dst,
+                       uint32_t layer_bytes = 0);
+void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t layer_bytes, ImageId dst,
                        const DkImageRect& rect, const ViewDesc* view = nullptr);
 
 // --- Shaders ----------------------------------------------------------------------------------------------------

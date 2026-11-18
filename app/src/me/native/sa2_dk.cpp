@@ -242,6 +242,11 @@ uint64_t Submit(DkCmdList list) {
   return order;
 }
 
+void SubmitUnfenced(DkCmdList list) {
+  dkQueueSubmitCommands(g->queue, list);
+  dkQueueFlush(g->queue);
+}
+
 uint64_t CompletedOrder() {
   if (!g) return 0;
   while (g->completed + 1 < g->next_order) {
@@ -317,6 +322,13 @@ void FreeBlock(Block& block, uint64_t after_order) {
 void FlushCpu(const Block& block, uint32_t offset, uint32_t size) {
   if (block.memory && size && (block.flags & DkMemBlockFlags_CpuAccessMask) == DkMemBlockFlags_CpuCached)
     dkMemBlockFlushCpuCache(block.memory, offset, size);
+}
+
+void InvalidateCpu(const Block& block, uint32_t offset, uint32_t size) {
+  // deko3d has no invalidate call: armDCacheFlush is clean + invalidate by line (DC CIVAC), safe on a block the
+  // CPU did not write.
+  if (block.memory && size && (block.flags & DkMemBlockFlags_CpuAccessMask) == DkMemBlockFlags_CpuCached)
+    armDCacheFlush(block.cpu + offset, size);
 }
 
 bool Arena::Initialize(uint32_t size, uint32_t flags, const char* what) {
@@ -715,18 +727,18 @@ void ResolveWhole(DkCmdBuf cmd, ImageId src, ImageId dst) {
 }
 
 void CopyImageToBuffer(DkCmdBuf cmd, ImageId src, const DkImageRect& rect, DkGpuAddr dst, uint32_t row_bytes,
-                       uint32_t rows) {
+                       uint32_t layer_bytes) {
   const DkImageView s = View(src);
   if (!s.pImage) return;
-  const DkCopyBuf buffer{dst, row_bytes, rows};
+  const DkCopyBuf buffer{dst, row_bytes, layer_bytes};
   dkCmdBufCopyImageToBuffer(cmd, &s, &rect, &buffer, 0);
 }
 
-void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t rows, ImageId dst,
+void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t layer_bytes, ImageId dst,
                        const DkImageRect& rect, const ViewDesc* view) {
   const DkImageView d = view ? View(dst, *view) : View(dst);
   if (!d.pImage) return;
-  const DkCopyBuf buffer{src, row_bytes, rows};
+  const DkCopyBuf buffer{src, row_bytes, layer_bytes};
   dkCmdBufCopyBufferToImage(cmd, &buffer, &d, &rect, 0);
 }
 

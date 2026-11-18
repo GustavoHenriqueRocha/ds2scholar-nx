@@ -18,10 +18,11 @@ namespace sa2::native {
 
 class TargetsDk final : public TargetsNative, public ContextTargetsDk {
  public:
-#include "sa2_native_targets_dk_infra.inc"
 #include "sa2_native_targets_dk_copias.inc"
 #include "sa2_native_targets_dk_edram.inc"
 #include "sa2_native_targets_dk_present.inc"
+  // infra last: its inline members use the other regions' members.
+#include "sa2_native_targets_dk_infra.inc"
 };
 
 }  // namespace sa2::native
