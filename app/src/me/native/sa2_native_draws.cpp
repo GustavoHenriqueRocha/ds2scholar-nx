@@ -108,6 +108,13 @@ REXCVAR_DEFINE_BOOL(sa2_native_pipeline_cache_drop_copy, false, "SA2 renderer",
                     "on the Switch); a save of the prewarm list alone takes the cache from the driver again. "
                     "Each save logs the heap (false = as before)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2-deko3d (2026-11-18): 17 of the 22 frames of 300 ms or more of ds2_004/ds2_005 (Lite) came within 2 s of a
+// pipeline cache save, and vkGetPipelineCacheData (about 12 MB) ran on the ring thread.
+REXCVAR_DEFINE_BOOL(ds2_pipeline_cache_copy_off_ring, false, "SA2 renderer",
+                    "Native renderer: the pipeline cache is taken from the driver (vkGetPipelineCacheData) on the "
+                    "writer thread instead of the ring thread; the ring thread only hands over the prewarm list. "
+                    "Each save logs the time it took on the ring thread (false = as before)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 #include "../me_platform_compat.h"  // banjo-nx: NEON on aarch64, SIMDe elsewhere
 
@@ -6359,6 +6366,10 @@ class DrawsVulkanImpl final : public DrawsVulkan {
       pipelines_no_save_ += compiled - prewarmed_counted_;
       prewarmed_counted_ = compiled;
     }
+    if (retry_writer_.exchange(false, std::memory_order_relaxed)) {
+      pipelines_no_save_ = std::max<uint32_t>(pipelines_no_save_, 1);  // retried in a minute, as on the ring
+      list_no_save_ = 1;
+    }
     // The pipeline cache is saved after 64 new pipelines, or after a minute with any new one: on the
     // Switch, exiting does not always reach the destructor.
     if (pipelines_no_save_ &&
@@ -8419,7 +8430,22 @@ class DrawsVulkanImpl final : public DrawsVulkan {
     LoadPipelinesList();  // the prewarm list
   }
 
+  // Time each save costs the calling (ring) thread, for the ds2_pipeline_cache_copy_off_ring A/B.
   void SaveCachePipelines() {
+    const auto before = std::chrono::steady_clock::now();
+    SaveCachePipelinesTimed();
+    if (timed_saves_cache_++ < 16) {
+      REXLOG_INFO("[native] C6: pipeline cache save took {:.1f} ms on the ring thread ({})",
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - before).count(),
+                  CopyOffRing() ? "cache copied by the writer thread" : "cache copied here");
+    }
+  }
+
+  void SaveCachePipelinesTimed() {
+    if (CopyOffRing()) {
+      SaveCachePipelinesOffRing();
+      return;
+    }
     if (!REXCVAR_GET(sa2_native_pipeline_cache_save_guard)) {
       SaveCachePipelinesNoGuard();
       return;
@@ -8505,11 +8531,87 @@ class DrawsVulkanImpl final : public DrawsVulkan {
     writer_warning_.notify_one();
   }
 
+  bool CopyOffRing() const {
+    return REXCVAR_GET(ds2_pipeline_cache_copy_off_ring) && cache_pipelines_ != VK_NULL_HANDLE;
+  }
+
+  // ds2_pipeline_cache_copy_off_ring: the ring thread hands over the prewarm list and asks for the cache; the
+  // writer thread takes it from the driver (the pipeline cache is internally synchronized: the prewarm thread
+  // already creates pipelines with it at the same time) and writes the file.
+  void SaveCachePipelinesOffRing() {
+    cache_saved_ = std::chrono::steady_clock::now();
+    std::vector<uint8_t> list;
+    if (list_no_save_) {
+      try {
+        list = SerializePipelinesList();
+      } catch (const std::bad_alloc&) {
+        if (!REXCVAR_GET(sa2_native_pipeline_cache_save_guard)) {
+          throw;
+        }
+        REXLOG_WARN("[native] C6: pipeline cache save postponed, out of memory for the prewarm list; {}",
+                    HeapState());
+        return;  // the unsaved counts stay: the next attempt is the usual one
+      }
+      list_no_save_ = 0;
+    }
+    const bool take_cache = pipelines_no_save_ != 0 || (DropCopyCache() && !list.empty());
+    pipelines_no_save_ = 0;
+    if (!take_cache && list.empty()) {
+      return;
+    }
+    std::lock_guard<std::mutex> latch(writer_mutex_);
+    if (!writer_cache_.joinable()) {
+      writer_cache_ = std::thread([this] {
+        rex::thread::set_current_thread_name("SA2 cache de pipelines");
+        WriterCacheMain();
+      });
+    }
+    if (!list.empty()) {
+      writer_list_ = std::move(list);
+    }
+    writer_take_cache_ = writer_take_cache_ || take_cache;
+    pending_writer_ = true;
+    writer_warning_.notify_one();
+  }
+
+  // Writer thread, ds2_pipeline_cache_copy_off_ring: as SaveCachePipelinesNoGuard, the cache is rewritten only
+  // if it grew (or a list without the writer's copy needs it). If it could not be taken, the list is not
+  // written either and the ring thread retries both (retry_writer_, checked every frame).
+  void TakeCacheOnWriter(std::vector<uint8_t>& data, std::vector<uint8_t>& list) {
+    const bool for_list = DropCopyCache() && !list.empty();
+    bool failed = false;
+    try {
+      size_t bytes = 0;
+      if (data_cache_(device_, cache_pipelines_, &bytes, nullptr) == VK_SUCCESS && bytes &&
+          (bytes != bytes_cache_saved_ || for_list)) {
+        data.resize(bytes);
+        const VkResult result = data_cache_(device_, cache_pipelines_, &bytes, data.data());
+        if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || !bytes) {
+          data.clear();
+          failed = true;
+        } else {
+          data.resize(bytes);
+          bytes_cache_saved_ = bytes;  // the writer thread's alone in this mode
+        }
+      }
+    } catch (const std::bad_alloc&) {
+      data = {};
+      failed = true;
+      REXLOG_WARN("[native] C6: pipeline cache save postponed, out of memory on the writer thread; {}",
+                  HeapState());
+    }
+    if (failed || (for_list && data.empty())) {
+      list = {};
+      retry_writer_.store(true, std::memory_order_relaxed);
+    }
+  }
+
   // Pipeline cache writer thread. Sleeping or continuing is decided with the lock held.
   void WriterCacheMain() {
     std::vector<uint8_t> data;
     std::vector<uint8_t> list;  // the prewarm one
     for (;;) {
+      bool take_cache = false;
       {
         std::unique_lock<std::mutex> latch(writer_mutex_);
         writer_warning_.wait(latch, [this] { return pending_writer_ || writer_stop_; });
@@ -8520,7 +8622,15 @@ class DrawsVulkanImpl final : public DrawsVulkan {
         writer_data_ = {};
         list = std::move(writer_list_);
         writer_list_ = {};
+        take_cache = writer_take_cache_;
+        writer_take_cache_ = false;
         pending_writer_ = false;
+      }
+      if (take_cache) {
+        TakeCacheOnWriter(data, list);
+      }
+      if (data.empty() && list.empty()) {
+        continue;  // off the ring thread only: the cache did not grow and there is no list
       }
       // A single file with both parts. Only one may arrive (the cache did not grow, or the list did not
       // change): the other is the last one written.
@@ -14537,6 +14647,9 @@ class DrawsVulkanImpl final : public DrawsVulkan {
   std::vector<uint8_t> writer_data_;
   bool pending_writer_ = false;
   bool writer_stop_ = false;
+  bool writer_take_cache_ = false;  // ds2_pipeline_cache_copy_off_ring: the writer takes the cache from the driver
+  std::atomic<bool> retry_writer_{false};  // the writer could not take it: the ring thread asks again
+  uint32_t timed_saves_cache_ = 0;
   // The single pipelines file. The last written version of each part (or the one read at start-up): owned
   // by the writer thread once it is running, and by Initialize before that. read_list_ goes from
   // LoadCachePipelines to LoadPipelinesList.
