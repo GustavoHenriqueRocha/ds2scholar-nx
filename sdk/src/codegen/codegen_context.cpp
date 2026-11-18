@@ -11,6 +11,10 @@
 #include "decoded_binary.h"
 
 #include <fmt/format.h>
+#include <algorithm>
+#include <cstdlib>
+#include <fstream>
+#include <vector>
 
 #include <rex/codegen/codegen_context.h>
 #include <rex/logging.h>
@@ -71,6 +75,20 @@ Result<CodegenContext> CodegenContext::Create(const std::filesystem::path& confi
 
   REXCODEGEN_TRACE("Loaded XEX: base=0x{:08X}, size=0x{:X}, entry=0x{:08X}",
                    ctx.binary_.baseAddress(), ctx.binary_.imageSize(), ctx.binary_.entryPoint());
+
+  // ds2-deko3d (2026-11-18): REXGLUE_DUMP_IMAGE=<file> writes the loaded image (decrypted, decompressed; zeros
+  // outside the sections) and stops, for offline tools that need the game's data tables (vertex fetch patcher).
+  if (const char* dump = std::getenv("REXGLUE_DUMP_IMAGE"); dump && *dump) {
+    std::vector<uint8_t> image(ctx.binary_.imageSize(), 0);
+    for (const auto& section : ctx.binary_.sections()) {
+      const uint32_t offset = section.baseAddress - ctx.binary_.baseAddress();
+      if (offset >= image.size() || !section.data) continue;
+      const size_t size = std::min<size_t>(section.size, image.size() - offset);
+      std::copy(section.data, section.data + size, image.begin() + offset);
+    }
+    std::ofstream(dump, std::ios::binary).write(reinterpret_cast<const char*>(image.data()), image.size());
+    return Err<CodegenContext>(ErrorCategory::Config, fmt::format("image written to {} (REXGLUE_DUMP_IMAGE)", dump));
+  }
 
   // Initialize AnalysisState from binary
   ctx.analysisState_.format = "xex";
