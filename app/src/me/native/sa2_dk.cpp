@@ -23,8 +23,6 @@ namespace sa2::dk {
 namespace {
 
 constexpr uint32_t kFences = 64;               // submissions in flight at most (more waits for the oldest)
-constexpr uint32_t kSlabBytes = 32u << 20;     // image memory blocks
-constexpr uint32_t kDedicatedBytes = 8u << 20; // images at least this big get a block of their own
 constexpr uint32_t kDkshMagic = 0x48534B44;    // "DKSH"
 
 uint32_t AlignUp(uint32_t value, uint32_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
@@ -78,6 +76,7 @@ struct State {
   std::vector<Slab> slabs;
   std::deque<ImageObject> images;  // never moves: DkImageView points into it
   std::vector<uint32_t> free_images;
+  uint32_t slabs_on_demand = 0;
   // Descriptors.
   Block image_descriptors, sampler_descriptors;
   std::vector<uint32_t> free_image_descriptors, free_sampler_descriptors;
@@ -405,6 +404,7 @@ ImageId CreateImage(const ImageDesc& desc, const char* what) {
       Slab slab;
       slab.block = MakeBlock(kSlabBytes, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, what);
       if (slab.block) {
+        ++g->slabs_on_demand;
         slab.free[0] = kSlabBytes;
         slab_index = uint32_t(g->slabs.size());
         g->slabs.push_back(std::move(slab));
@@ -508,6 +508,38 @@ std::string ImagesSummary() {
   return fmt::format("{} images, {:.1f} of {:.1f} MB in {} blocks of 32 MB and {} dedicated", live,
                      double(used) / 1048576.0, double(blocks) / 1048576.0, slabs, dedicated);
 }
+
+uint32_t AddImageSlabs(uint32_t count, const char* what) {
+  if (!g) return 0;
+  uint32_t made = 0;
+  for (; made < count; ++made) {
+    Slab slab;
+    slab.block = MakeBlock(kSlabBytes, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, what);
+    if (!slab.block) break;
+    slab.free[0] = kSlabBytes;
+    g->slabs.push_back(std::move(slab));
+  }
+  return made;
+}
+
+uint64_t ImageSlabsFreeBytes() {
+  uint64_t free = 0;
+  if (g)
+    for (const Slab& slab : g->slabs)
+      if (slab.block && !slab.dedicated) free += slab.block.size - slab.used;
+  return free;
+}
+
+uint64_t ImageSlabsLargestGap() {
+  uint64_t largest = 0;
+  if (g)
+    for (const Slab& slab : g->slabs)
+      if (slab.block && !slab.dedicated)
+        for (const auto& [offset, size] : slab.free) largest = std::max<uint64_t>(largest, size);
+  return largest;
+}
+
+uint32_t ImageSlabsOnDemand() { return g ? g->slabs_on_demand : 0; }
 
 // --- Descriptors ----------------------------------------------------------------------------------------------
 

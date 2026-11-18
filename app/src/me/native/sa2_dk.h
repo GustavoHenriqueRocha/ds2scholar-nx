@@ -158,6 +158,17 @@ struct ViewDesc {
 DkImageView View(ImageId id, const ViewDesc& desc);
 // Totals for the reports (bytes of live images, blocks, wasted space at the end of blocks).
 std::string ImagesSummary();
+// Shared image blocks (the texture pool, sa2_native_textures_pool_dk.cpp): images below kDedicatedBytes are
+// sub-allocated from blocks of kSlabBytes; bigger ones get a block of their own.
+constexpr uint32_t kSlabBytes = 32u << 20;
+constexpr uint32_t kDedicatedBytes = 8u << 20;
+// Creates up to `count` empty shared blocks ahead of time; returns how many it made.
+uint32_t AddImageSlabs(uint32_t count, const char* what);
+// Free bytes in the shared blocks, and the largest contiguous free range among them.
+uint64_t ImageSlabsFreeBytes();
+uint64_t ImageSlabsLargestGap();
+// Shared blocks CreateImage had to create because no block had room.
+uint32_t ImageSlabsOnDemand();
 
 // --- Descriptors ------------------------------------------------------------------------------------------------
 

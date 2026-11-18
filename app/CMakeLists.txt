@@ -65,8 +65,18 @@ set(DS2_SOURCES
     src/me/native/sa2_native_draws.cpp
     src/me/native/sa2_deferred_recording.cpp
     src/me/native/sa2_native_targets.cpp
-    # ds2-deko3d: the deko3d targets (sa2_native_deko3d = true; device and presentation only so far).
-    src/me/native/sa2_native_deko3d.cpp
+    # ds2-deko3d: the renderer translated to deko3d (sa2_native_deko3d = true; Switch only, empty elsewhere).
+    # sa2_dk = base layer; the two classes are assembled from one file per translated region
+    # (~/projetos/ds2-deko3d docs/pesquisas/traducao/08-contrato-sa2-dk.md).
+    src/me/native/sa2_dk.cpp
+    src/me/native/sa2_native_targets_dk_infra.cpp
+    src/me/native/sa2_native_targets_dk_copias.cpp
+    src/me/native/sa2_native_targets_dk_edram.cpp
+    src/me/native/sa2_native_targets_dk_present.cpp
+    src/me/native/sa2_native_draws_dk_1.cpp
+    src/me/native/sa2_native_draws_dk_2.cpp
+    src/me/native/sa2_shader_library_dk.cpp
+    src/me/native/sa2_native_textures_pool_dk.cpp
     src/me/native/sa2_native_shaders.cpp
     src/me/native/sa2_native_textures_pool.cpp
     src/me/native/sa2_shader_library.cpp
@@ -236,6 +246,9 @@ if(REXGLUE_PLATFORM_SWITCH)
     message(STATUS "ds2: game code omit frame pointer ${DS2_SWITCH_OMIT_FRAME_POINTER}")
     # ds2-deko3d: libdeko3d (devkitPro libnx) for sa2_native_deko3d; only linked in, unused while the key is off.
     target_link_libraries(ds2 PRIVATE deko3d nx)
+    # ds2-deko3d: the renderer's own shaders, GLSL -> DKSH by uam at build time, embedded.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/src/me/native/shaders_dk/dkshaders.cmake)
+    ds2_dk_shaders(ds2)
     # ds2_register.cpp is one generated function of ~30,000 SetFunction calls run once at start-up; sa2-nx measured
     # 771-927 s of GCC -O3 on its own (the critical path of the build). -O0 changes a few microseconds of start-up.
     set(_ds2_register "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/ds2_register.cpp")

@@ -65,6 +65,9 @@
 #include "native/sa2_native_targets.h"
 #include "native/sa2_native_shaders.h"
 #include "native/sa2_shader_library.h"
+#if REX_PLATFORM_SWITCH || defined(__SWITCH__)
+#include "native/sa2_shader_library_dk.h"
+#endif
 
 namespace sa2::native {
 extern const ShadersNative* g_active_library;  // sa2_native_glue.cpp
@@ -1166,6 +1169,11 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       BuildLibraryCodeIndex(shaders_);
       g_library.store(&shaders_, std::memory_order_release);
       REXLOG_INFO("[native] shader library {}", lib_path.string());
+#if REX_PLATFORM_SWITCH || defined(__SWITCH__)
+      // ds2-deko3d: the DKSH package next to it (<library>.dkp), the deko3d draws' shaders.
+      if (REXCVAR_GET(sa2_native_deko3d) && !sa2::native::OpenActiveLibraryDksh(shaders_, lib_path))
+        REXLOG_WARN("[native] [dk] no DKSH package next to {}: nothing will be drawn", lib_path.string());
+#endif
     } else {
       REXLOG_WARN("[native] no shader library at {}: nothing will be drawn", lib_path.string());
     }
