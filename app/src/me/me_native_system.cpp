@@ -130,8 +130,8 @@ REXCVAR_DEFINE_BOOL(sa2_native_edram4_several_rect, true, "SA2 renderer",
 // ds2-deko3d (stage E3): deko3d instead of Vulkan/NVK. Only the device, its memory and the presentation exist so far:
 // the window shows a pulsing background and bars of the frame's draws and copies, not the game.
 REXCVAR_DEFINE_BOOL(sa2_native_deko3d, false, "SA2 renderer",
-                    "Native renderer on deko3d instead of Vulkan (Switch, stage E3: the game is not drawn yet, the "
-                    "window shows the frame's draws and copies as bars). false = Vulkan/NVK")
+                    "Native renderer on deko3d instead of Vulkan (Switch; the translation of the Vulkan renderer, "
+                    "ds2-deko3d). false = Vulkan/NVK")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // sa2-nx: on by default on the Switch (the emulated GPU runs at a few frames per second there); on PC the emulated
 // GPU stays the default reference (sa2_renderer_native = true in sa2.toml or REX_SA2_RENDERER_NATIVE).

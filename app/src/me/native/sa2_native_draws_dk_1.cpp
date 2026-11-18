@@ -2100,8 +2100,7 @@ bool DrawsDkImpl::Draw(const SubmissionDraw& p) {
     }
   }
   if (!recorded || !Equal(&viewport, &viewport_recorded_, sizeof(viewport))) {
-    const DkViewport viewport_dk = ViewportDk(viewport);
-    SA2_SUB(3, dkCmdBufSetViewports(cmd, 0, &viewport_dk, 1));
+    SA2_SUB(3, sa2::dk::SetViewport(cmd, viewport));
     viewport_recorded_ = viewport;
   }
   if (!recorded || !Equal(&scissor, &recorded_scissor_, sizeof(scissor))) {
@@ -2116,10 +2115,9 @@ bool DrawsDkImpl::Draw(const SubmissionDraw& p) {
     std::memcpy(recorded_blend_, blend_constant, sizeof(blend_constant));
   }
   // Also without bias: the state is dynamic in every pipeline and has to be recorded.
-  // deko3d (to be confirmed on the console): the same (constant, clamp, slope) arguments; nouveau's GL driver
-  // doubles the constant factor for Maxwell, deko3d writes what it is given (ds2-deko3d bench-semantica).
+  // deko3d doubles the constant factor, NVK does not: SetDepthBias halves it (sa2_dk_raster.h, bench test 9).
   if (!recorded || !Equal(bias, recorded_bias_, sizeof(bias))) {
-    SA2_SUB(6, dkCmdBufSetDepthBias(cmd, bias[0], 0.0f, bias[1]));
+    SA2_SUB(6, sa2::dk::SetDepthBias(cmd, bias[0], 0.0f, bias[1]));
     std::memcpy(recorded_bias_, bias, sizeof(bias));
   }
   if (!recorded) {
@@ -2302,12 +2300,11 @@ void DrawsDkImpl::EmitPostponedSky(DkCmdBuf cmd, uint32_t reason) {
   dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 1, c.buffer + c.offsets_ubo[1], uint32_t(kUboBytesPs));
   dkCmdBufBindUniformBuffer(cmd, DkStage_Vertex, 2, shared_base + c.offsets_ubo[2], uint32_t(kUboBytesShared));
   dkCmdBufBindUniformBuffer(cmd, DkStage_Fragment, 2, shared_base + c.offsets_ubo[2], uint32_t(kUboBytesShared));
-  const DkViewport viewport = ViewportDk(c.viewport);
-  dkCmdBufSetViewports(cmd, 0, &viewport, 1);
+  sa2::dk::SetViewport(cmd, c.viewport);
   const DkScissor scissor = ScissorDk(c.scissor);
   dkCmdBufSetScissors(cmd, 0, &scissor, 1);
   dkCmdBufSetBlendConst(cmd, c.blend[0], c.blend[1], c.blend[2], c.blend[3]);
-  dkCmdBufSetDepthBias(cmd, c.bias[0], 0.0f, c.bias[1]);
+  sa2::dk::SetDepthBias(cmd, c.bias[0], 0.0f, c.bias[1]);
   if (c.with_stencil) {
     dkCmdBufSetStencil(cmd, DkFace_Front, uint8_t(c.stencil[0] >> 16), uint8_t(c.stencil[0]),
                        uint8_t(c.stencil[0] >> 8));

@@ -78,10 +78,6 @@ void BlitDk(DkCmdBuf cmd, sa2::dk::ImageId source, sa2::dk::ImageId target, cons
   sa2::dk::Blit(cmd, source, s, target, d, linear);
 }
 
-DkViewport ViewportDk(const VkRect2D& r) {
-  return {float(r.offset.x), float(r.offset.y), float(r.extent.width), float(r.extent.height), 0.0f, 1.0f};
-}
-
 DkScissor ScissorDk(const VkRect2D& r) {
   return {uint32_t(r.offset.x), uint32_t(r.offset.y), r.extent.width, r.extent.height};
 }
@@ -775,11 +771,10 @@ bool TargetsDk::ImportColorDepthEDRAM4(Image& source, Image& target,
   // The procedural triangle covers the viewport: make it the tiles' rectangle, so each of the up to 9
   // passes rasterizes only those tiles (the shaders use gl_FragCoord, not the viewport). With a
   // whole-target viewport every pass of a 1-tile import cost ~0.4 ms on the Switch.
-  const DkViewport viewport = REXCVAR_GET(sa2_native_edram4_import_area_tiles)
-      ? ViewportDk(host_scissor)
-      : ViewportDk(VkRect2D{{0, 0}, {HostWidth(target), HostHeight(target)}});
+  sa2::dk::SetViewport(commands_work_, REXCVAR_GET(sa2_native_edram4_import_area_tiles)
+                                           ? host_scissor
+                                           : VkRect2D{{0, 0}, {HostWidth(target), HostHeight(target)}});
   const DkScissor scissor_dk = ScissorDk(host_scissor);
-  dkCmdBufSetViewports(commands_work_, 0, &viewport, 1);
   dkCmdBufSetScissors(commands_work_, 0, &scissor_dk, 1);
   dkCmdBufBindTexture(commands_work_, DkStage_Fragment, 0, sa2::dk::Handle(descriptor_source, sampler_depth_edram_));
   if (source_depth)
@@ -1195,9 +1190,8 @@ bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32
   dkCmdBufBindRenderTarget(commands_work_, &color_target, nullptr);
   pass->state.Bind(commands_work_);
   BindNoVerticesDk(commands_work_);
-  const DkViewport viewport = ViewportDk(area);
+  sa2::dk::SetViewport(commands_work_, area);
   const DkScissor scissor = ScissorDk(area);
-  dkCmdBufSetViewports(commands_work_, 0, &viewport, 1);
   dkCmdBufSetScissors(commands_work_, 0, &scissor, 1);
   dkCmdBufBindTexture(commands_work_, DkStage_Fragment, 0, sa2::dk::Handle(descriptor_source, sampler_depth_edram_));
   DrawPassDk(commands_work_, vs_conv_color_frag_, pass->fs, constants_gpu, sizeof(delta));
@@ -1264,9 +1258,8 @@ bool TargetsDk::ResolveDepthMs(Image& source, Image& target, const VkImageCopy& 
   dkCmdBufBindRenderTargets(commands_work_, nullptr, 0, &depth_target);
   pass->state.Bind(commands_work_);
   BindNoVerticesDk(commands_work_);
-  const DkViewport viewport = ViewportDk(area);
+  sa2::dk::SetViewport(commands_work_, area);
   const DkScissor scissor = ScissorDk(area);
-  dkCmdBufSetViewports(commands_work_, 0, &viewport, 1);
   dkCmdBufSetScissors(commands_work_, 0, &scissor, 1);
   dkCmdBufBindTexture(commands_work_, DkStage_Fragment, 0, sa2::dk::Handle(descriptor_depth, sampler_depth_edram_));
   DrawPassDk(commands_work_, vs_depth_resolve_ms_, fs_depth_resolve_ms_, constants_gpu, sizeof(delta));
@@ -1602,9 +1595,8 @@ bool TargetsDk::ConvertAliasColorFragEDRAM4(Image& source, Image& target, uint32
   dkCmdBufBindRenderTarget(commands_work_, &view_target, nullptr);
   pass->state.Bind(commands_work_);
   BindNoVerticesDk(commands_work_);
-  const DkViewport viewport = ViewportDk(host_scissor);
+  sa2::dk::SetViewport(commands_work_, host_scissor);
   const DkScissor scissor_dk = ScissorDk(host_scissor);
-  dkCmdBufSetViewports(commands_work_, 0, &viewport, 1);
   dkCmdBufSetScissors(commands_work_, 0, &scissor_dk, 1);
   dkCmdBufBindTexture(commands_work_, DkStage_Fragment, 0, sa2::dk::Handle(descriptor_source, sampler_depth_edram_));
   DrawPassDk(commands_work_, vs_conv_color_frag_, pass->fs, constants_gpu, sizeof(constants));

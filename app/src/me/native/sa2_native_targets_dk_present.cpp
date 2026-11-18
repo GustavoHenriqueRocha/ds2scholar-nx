@@ -1842,8 +1842,7 @@ void TargetsDk::PassOutput(DkCmdBuf cmd, uint32_t s, const DkImageView& target, 
                            const DkShader* fragment, const void* constants, uint32_t constants_bytes,
                            uint32_t texture, bool ramp) {
   dkCmdBufBindRenderTarget(cmd, &target, nullptr);
-  const DkViewport viewport{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
-  dkCmdBufSetViewports(cmd, 0, &viewport, 1);
+  sa2::dk::SetViewport(cmd, 0.0f, 0.0f, float(width), float(height));
   const DkScissor scissor{0, 0, width, height};
   dkCmdBufSetScissors(cmd, 0, &scissor, 1);
   const DkShader* shaders[2] = {vs_output_, fragment};

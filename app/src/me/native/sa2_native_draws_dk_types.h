@@ -1841,10 +1841,7 @@ class StateTracker {
 // (BufferUploadDk and PostponedSkyDk, proposed for region 06, are gone: it keeps uploads_ / shared_bufs_ as
 // sa2::dk::Arena, vcache_buf_ as sa2::dk::Block and its own PostponedSky; the sky's vertex input is sky_layout_.)
 
-// The Vulkan structs the translated logic keeps as data, to deko3d at the call.
-inline DkViewport ViewportDk(const VkViewport& v) {
-  return DkViewport{v.x, v.y, v.width, v.height, v.minDepth, v.maxDepth};
-}
+// The Vulkan structs the translated logic keeps as data, to deko3d at the call (viewports: sa2::dk::SetViewport).
 inline DkScissor ScissorDk(const VkRect2D& r) {
   return DkScissor{uint32_t(std::max(0, r.offset.x)), uint32_t(std::max(0, r.offset.y)), r.extent.width,
                    r.extent.height};

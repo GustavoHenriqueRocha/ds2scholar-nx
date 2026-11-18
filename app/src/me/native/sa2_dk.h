@@ -34,6 +34,8 @@
 
 #include <rex/ui/vulkan/api.h>  // only the plain types (VkFormat, VkRect2D...), never a call
 
+#include "sa2_dk_raster.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -373,6 +375,30 @@ uint32_t BytesPerTexel(DkImageFormat format);  // 0 for compressed formats
 DkMsMode FromSamples(uint32_t samples);
 DkImageRect Rect(const VkRect2D& rect);
 DkImageRect Rect(int32_t x, int32_t y, uint32_t width, uint32_t height);
+
+// --- Rasterizer state read differently from Vulkan (sa2_dk_raster.h, measured by bench-semantica) ---------------
+
+// Every viewport goes through here: Vulkan coordinates in, viewport + Y swizzle out (a negative height draws
+// nothing in deko3d; TriAevum p6b/p6c).
+inline void SetViewport(DkCmdBuf cmd, float x, float y, float width, float height, float min_depth = 0.0f,
+                        float max_depth = 1.0f) {
+  const sa2::native::dk_raster::ViewportPlan plan = sa2::native::dk_raster::PlanViewport(x, y, width, height);
+  const DkViewport viewport{plan.x, plan.y, plan.width, plan.height, min_depth, max_depth};
+  dkCmdBufSetViewports(cmd, 0, &viewport, 1);
+  const DkViewportSwizzle swizzle{DkSwizzle_PositiveX, plan.negate_y ? DkSwizzle_NegativeY : DkSwizzle_PositiveY,
+                                  DkSwizzle_PositiveZ, DkSwizzle_PositiveW};
+  dkCmdBufSetViewportSwizzles(cmd, 0, &swizzle, 1);
+}
+inline void SetViewport(DkCmdBuf cmd, const VkViewport& v) {
+  SetViewport(cmd, v.x, v.y, v.width, v.height, v.minDepth, v.maxDepth);
+}
+inline void SetViewport(DkCmdBuf cmd, const VkRect2D& r) {
+  SetViewport(cmd, float(r.offset.x), float(r.offset.y), float(r.extent.width), float(r.extent.height));
+}
+// Vulkan's (constant, clamp, slope); deko3d doubles the constant, NVK does not.
+inline void SetDepthBias(DkCmdBuf cmd, float constant, float clamp, float slope) {
+  dkCmdBufSetDepthBias(cmd, sa2::native::dk_raster::DepthBiasConstantDk(constant), clamp, slope);
+}
 
 }  // namespace sa2::dk
 #endif  // SA2_DK_AVAILABLE

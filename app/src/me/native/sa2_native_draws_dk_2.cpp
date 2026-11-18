@@ -3394,9 +3394,9 @@ void DrawsDkImpl::FillFixedState(const PipelineKey& key, FixedPipelineState& fix
   rasterization.cullMode = DkFace(((key.rasterization & 0x1) ? DkFace_Front : 0) |
                                   ((key.rasterization & 0x2) ? DkFace_Back : 0));
   // PA_SU_SC_MODE_CNTL.face: 1 = the front face is clockwise (not confirmed on screen).
-  // [dk] DkFrontFace numbers CW 0 / CCW 1 (VkFrontFace CCW 0 / CW 1). The winding is seen after the viewport,
-  // whose Y the draw flips (negative height): to be checked on the console (TriAevum p6c flipped Y by the
-  // viewport swizzle instead).
+  // [dk] DkFrontFace numbers CW 0 / CCW 1 (VkFrontFace CCW 0 / CW 1). The winding is seen after the viewport;
+  // with sa2::dk::SetViewport (NegativeY swizzle or plain viewport for Vulkan's negative height) the same face
+  // name keeps every cull case as in Vulkan (bench-semantica test 6, 2026-11-18).
   rasterization.frontFace = (key.rasterization & 0x4) ? DkFrontFace_CW : DkFrontFace_CCW;
   // [dk] Vulkan's provoking vertex is the first one (no VK_EXT_provoking_vertex here); deko3d's default is the last.
   rasterization.provokingVertex = DkProvokingVertex_First;
