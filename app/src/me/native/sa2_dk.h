@@ -181,8 +181,11 @@ void FreeSamplerDescriptor(uint32_t index, uint64_t after_order);
 void WriteSamplerDescriptor(uint32_t index, const DkSampler& sampler);
 // Binds both sets (every new command list needs it).
 void BindDescriptors(DkCmdBuf cmd);
-// true once after any descriptor write: the next command list starts with Barrier(cmd, Hazard::Descriptors).
-bool TakeDescriptorsWritten();
+// Descriptor writes, per consumer: each one keeps its own `seen` (starts at 0) and gets true once after any
+// write it has not seen, then records Barrier(cmd, Hazard::Descriptors) before what can read them. One shared
+// flag would let the first consumer of a list (TargetsDk starting it) hide a later write from the draws.
+bool DescriptorsWrittenSince(uint64_t& seen);
+uint64_t DescriptorsGeneration();
 // The game shaders' bindless handle.
 constexpr DkResHandle Handle(uint32_t image, uint32_t sampler) { return image | (sampler << 20); }
 

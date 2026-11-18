@@ -81,7 +81,7 @@ struct State {
   // Descriptors.
   Block image_descriptors, sampler_descriptors;
   std::vector<uint32_t> free_image_descriptors, free_sampler_descriptors;
-  bool descriptors_written = false;
+  uint64_t descriptors_generation = 0;
   std::array<uint64_t, size_t(Hazard::kCount)> barriers{};
 };
 
@@ -517,7 +517,7 @@ void WriteImageDescriptor(uint32_t index, const DkImageView& view, bool load_sto
   if (!g || index >= kImageDescriptors) return;
   auto* descriptors = reinterpret_cast<DkImageDescriptor*>(g->image_descriptors.cpu);
   dkImageDescriptorInitialize(&descriptors[index], &view, load_store, decay_ms);
-  g->descriptors_written = true;
+  ++g->descriptors_generation;
 }
 
 uint32_t AllocSamplerDescriptor() {
@@ -538,7 +538,7 @@ void WriteSamplerDescriptor(uint32_t index, const DkSampler& sampler) {
   if (!g || index >= kSamplerDescriptors) return;
   auto* descriptors = reinterpret_cast<DkSamplerDescriptor*>(g->sampler_descriptors.cpu);
   dkSamplerDescriptorInitialize(&descriptors[index], &sampler);
-  g->descriptors_written = true;
+  ++g->descriptors_generation;
 }
 
 void BindDescriptors(DkCmdBuf cmd) {
@@ -546,11 +546,13 @@ void BindDescriptors(DkCmdBuf cmd) {
   dkCmdBufBindSamplerDescriptorSet(cmd, g->sampler_descriptors.gpu, kSamplerDescriptors);
 }
 
-bool TakeDescriptorsWritten() {
-  if (!g || !g->descriptors_written) return false;
-  g->descriptors_written = false;
+bool DescriptorsWrittenSince(uint64_t& seen) {
+  if (!g || g->descriptors_generation == seen) return false;
+  seen = g->descriptors_generation;
   return true;
 }
+
+uint64_t DescriptorsGeneration() { return g ? g->descriptors_generation : 0; }
 
 uint32_t TransientDescriptors::Push(const DkImageView& view, bool load_store, bool decay_ms) {
   if (used_ >= count_) return UINT32_MAX;

@@ -126,8 +126,8 @@ class DrawsDk {
 
 }  // namespace sa2::native
 
-// An enhancement defined in a Vulkan file inside an anonymous namespace (the draws' ones), mirrored in a deko3d
-// file: reads the same cvar (no second definition) and reports as "<key> (dk)".
+// An enhancement of a Vulkan draws file mirrored in a deko3d file: reads the same cvar (no second definition) and
+// reports as "<key> (dk)". Use it at global scope (REXCVAR_DECLARE only works there), with a VAR name of its own.
 #define SA2_ENHANCEMENT_DK(VAR, KEY, GROUP, DESC)                                                \
   REXCVAR_DECLARE(bool, KEY);                                                                    \
   ::sa2::enh::Enhancement VAR{#KEY " (dk)", GROUP, DESC, [] { return REXCVAR_GET(KEY); }};      \
