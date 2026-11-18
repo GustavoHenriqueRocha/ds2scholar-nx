@@ -658,6 +658,7 @@ void Barrier(DkCmdBuf cmd, Hazard hazard) {
       case Hazard::RenderToSample: mode = DkBarrier_Fragments; invalidate = DkInvalidateFlags_Image; break;
       case Hazard::CopyToRender: mode = DkBarrier_Full; invalidate = DkInvalidateFlags_Image; break;
       case Hazard::CopyToSample: mode = DkBarrier_Full; invalidate = DkInvalidateFlags_Image; break;
+      case Hazard::CopyToAny: mode = DkBarrier_Full; invalidate = DkInvalidateFlags_Image; break;
       case Hazard::ComputeToAny: mode = DkBarrier_Primitives; invalidate = DkInvalidateFlags_Image; break;
       case Hazard::AnyToCompute: mode = DkBarrier_Primitives; invalidate = DkInvalidateFlags_Image; break;
       case Hazard::UploadToSample: mode = DkBarrier_Full; invalidate = DkInvalidateFlags_Image; break;
@@ -676,6 +677,47 @@ void Barrier(DkCmdBuf cmd, Hazard hazard) {
 }
 
 std::array<uint64_t, size_t(Hazard::kCount)> BarrierCounts() { return g ? g->barriers : decltype(g->barriers){}; }
+
+// --- Transfers ----------------------------------------------------------------------------------------------
+
+void CopyImage(DkCmdBuf cmd, ImageId src, const DkImageRect& src_rect, ImageId dst, const DkImageRect& dst_rect,
+               DkImageFormat src_view, DkImageFormat dst_view) {
+  const DkImageView s = View(src, src_view), d = View(dst, dst_view);
+  if (!s.pImage || !d.pImage) return;
+  dkCmdBufCopyImage(cmd, &s, &src_rect, &d, &dst_rect, 0);
+}
+
+void Blit(DkCmdBuf cmd, ImageId src, const DkImageRect& src_rect, ImageId dst, const DkImageRect& dst_rect,
+          bool linear) {
+  const DkImageView s = View(src), d = View(dst);
+  if (!s.pImage || !d.pImage) return;
+  dkCmdBufBlitImage(cmd, &s, &src_rect, &d, &dst_rect, linear ? DkBlitFlag_FilterLinear : DkBlitFlag_FilterNearest,
+                    0);
+}
+
+bool Has2D(ImageId id) { return (Desc(id).flags & DkImageFlags_Usage2DEngine) != 0; }
+
+void ResolveWhole(DkCmdBuf cmd, ImageId src, ImageId dst) {
+  const DkImageView s = View(src), d = View(dst);
+  if (!s.pImage || !d.pImage) return;
+  dkCmdBufResolveImage(cmd, &s, &d);
+}
+
+void CopyImageToBuffer(DkCmdBuf cmd, ImageId src, const DkImageRect& rect, DkGpuAddr dst, uint32_t row_bytes,
+                       uint32_t rows) {
+  const DkImageView s = View(src);
+  if (!s.pImage) return;
+  const DkCopyBuf buffer{dst, row_bytes, rows};
+  dkCmdBufCopyImageToBuffer(cmd, &s, &rect, &buffer, 0);
+}
+
+void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t rows, ImageId dst,
+                       const DkImageRect& rect, const ViewDesc* view) {
+  const DkImageView d = view ? View(dst, *view) : View(dst);
+  if (!d.pImage) return;
+  const DkCopyBuf buffer{src, row_bytes, rows};
+  dkCmdBufCopyBufferToImage(cmd, &buffer, &d, &rect, 0);
+}
 
 // --- Shaders --------------------------------------------------------------------------------------------------
 

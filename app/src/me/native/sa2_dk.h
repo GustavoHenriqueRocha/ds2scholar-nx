@@ -255,6 +255,7 @@ enum class Hazard : uint8_t {
   RenderToSample,    // ... sampled or loaded by a later draw or dispatch
   CopyToRender,      // a DMA copy / 2D blit wrote what the 3D engine reads or renders into next
   CopyToSample,      // ... what a later draw or dispatch samples
+  CopyToAny,         // ... what anything later reads or writes (render, sample, another copy)
   ComputeToAny,      // a dispatch wrote an image read or written by anything later
   AnyToCompute,      // a dispatch reads or writes what earlier work wrote
   UploadToSample,    // buffer-to-image copies (texture uploads) before the draws that sample them
@@ -267,6 +268,24 @@ enum class Hazard : uint8_t {
 void Barrier(DkCmdBuf cmd, Hazard hazard);
 // Barriers emitted per Hazard since the start (for the reports).
 std::array<uint64_t, size_t(Hazard::kCount)> BarrierCounts();
+
+// --- Transfers ---------------------------------------------------------------------------------------------------
+
+// DMA copy engine: raw bytes (depth and stencil together), no format conversion. The views default to the images'
+// own formats; pass a format to copy through a view of another one of the same size.
+void CopyImage(DkCmdBuf cmd, ImageId src, const DkImageRect& src_rect, ImageId dst, const DkImageRect& dst_rect,
+               DkImageFormat src_view = DkImageFormat_None, DkImageFormat dst_view = DkImageFormat_None);
+// 2D engine (scaling, format conversion). Both images need DkImageFlags_Usage2DEngine (Has2D); depth only nearest.
+void Blit(DkCmdBuf cmd, ImageId src, const DkImageRect& src_rect, ImageId dst, const DkImageRect& dst_rect,
+          bool linear);
+bool Has2D(ImageId id);
+// Multisample to single sample, whole image only (dkCmdBufResolveImage takes no rectangle).
+void ResolveWhole(DkCmdBuf cmd, ImageId src, ImageId dst);
+// Image <-> linear buffer (read-backs, texture uploads). row_bytes / rows describe the buffer (0 = packed).
+void CopyImageToBuffer(DkCmdBuf cmd, ImageId src, const DkImageRect& rect, DkGpuAddr dst, uint32_t row_bytes = 0,
+                       uint32_t rows = 0);
+void CopyBufferToImage(DkCmdBuf cmd, DkGpuAddr src, uint32_t row_bytes, uint32_t rows, ImageId dst,
+                       const DkImageRect& rect, const ViewDesc* view = nullptr);
 
 // --- Shaders ----------------------------------------------------------------------------------------------------
 

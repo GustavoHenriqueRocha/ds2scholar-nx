@@ -132,7 +132,7 @@ class DrawsDk {
   REXCVAR_DECLARE(bool, KEY);                                                                    \
   ::sa2::enh::Enhancement VAR{#KEY " (dk)", GROUP, DESC, [] { return REXCVAR_GET(KEY); }};      \
   [[maybe_unused]] static const bool VAR##_registered_ = ::sa2::enh::Register(&VAR)
-// An enhancement with external linkage in a Vulkan file (the render targets' ones, namespace sa2::native):
-// declare it and use the same object.
+// An enhancement with external linkage in a Vulkan file (the render targets' ones, which are at global scope):
+// declare it at global scope (outside any namespace) and use the same object.
 #define SA2_ENHANCEMENT_EXTERN(VAR) extern ::sa2::enh::Enhancement VAR
 #endif  // SA2_DK_AVAILABLE
