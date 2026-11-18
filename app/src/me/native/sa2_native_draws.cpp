@@ -809,6 +809,14 @@ REXCVAR_DEFINE_BOOL(sa2_native_send_after_shadows, false, "SA2 renderer",
                     "Native renderer: submit work to the GPU as soon as the shadow pass "
                     "closes, instead of all together at the end of the frame. The GPU stops idling "
                     "while the CPU finishes recording");
+// ds2-deko3d (2026-11-18): fh2-recompiled (79212ba, the same nfsmw-nx renderer family) submits every 250 draws, between
+// passes, in the same slot: S23 15 -> 30 fps, ring GPU wait 1.92 -> 0.52 ms per Swap on PC. DS2 sent once per frame
+// (ds2_012/013: 248-301 submissions in 10 s), so the GPU starts the frame only after the ring recorded all of it.
+REXCVAR_DEFINE_INT32(ds2_native_partial_send, 0, "SA2 renderer",
+                     "Native renderer: every N draws, at a pass change, what is recorded goes to the GPU without a "
+                     "fence and the recording goes on in the same slot (0 = once per frame, as before)")
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_INT32(sa2_native_stats_per_draw_s, 0, "SA2 renderer",
                      "Native renderer: with N > 0, measures one frame every N "
                      "seconds with one query per draw and distributes fragments per pixel shader");
@@ -3809,6 +3817,14 @@ class DrawsVulkanImpl final : public DrawsVulkan {
     }
     if (!active_pass_ || pass_key != pass_key_ ||
         pass_generation_ != context_->GenerationCommands()) {
+      // ds2_native_partial_send: only where a pass closes anyway; SendPartial closes it and bumps the generation.
+      if (partial_send_ < 0) {
+        partial_send_ = REXCVAR_GET(ds2_native_partial_send);
+      }
+      if (partial_send_ > 0 && active_pass_ && drawn_ - drawn_at_send_ >= uint64_t(partial_send_) &&
+          context_->SendPartial()) {
+        drawn_at_send_ = drawn_;
+      }
       const auto before_pass = std::chrono::steady_clock::now();
       if (pass_generation_ != context_->GenerationCommands()) {
         ++passes_per_generation_;
@@ -6168,6 +6184,7 @@ class DrawsVulkanImpl final : public DrawsVulkan {
   }
 
   void BeforeSend() override {
+    drawn_at_send_ = drawn_;  // ds2_native_partial_send counts from the last submission, full or partial
     WaitUploads();  // deferred vertex copies, before flushing the mapping and submitting
     FinishPass();
     // Whatever is still on the texture bind thread, with its views, descriptors, barriers and copies, goes
@@ -14419,6 +14436,8 @@ class DrawsVulkanImpl final : public DrawsVulkan {
   uint32_t warnings_indices_ = 0;
   uint32_t warnings_swizzle_ = 0;
   uint64_t drawn_ = 0;
+  int32_t partial_send_ = -1;  // ds2_native_partial_send, read once
+  uint64_t drawn_at_send_ = 0;  // drawn_ at the last submission, full or partial
   uint64_t drawn_timed_ = 0;  // of those, with the stage stopwatch
   uint32_t stopwatch_counter_ = 0;
   bool time_ = false;  // the current draw carries the stage stopwatch

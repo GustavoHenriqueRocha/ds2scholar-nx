@@ -884,6 +884,10 @@ struct SlotWork {
   VkCommandBuffer work = VK_NULL_HANDLE;
   VkCommandBuffer upload = VK_NULL_HANDLE;
   VkFence fence = VK_NULL_HANDLE;
+  // ds2_native_partial_send: command buffers of the partial submissions, from the pools above (reset with them),
+  // and how many this recording has used.
+  std::vector<VkCommandBuffer> extra_work, extra_upload;
+  uint32_t partials = 0;
   // Descriptor sets for typeless EDRAM conversions are reset only after this
   // slot's fence, so every dispatch keeps the views recorded with it.
   VkDescriptorPool pool_conversion_edram = VK_NULL_HANDLE;
@@ -3846,6 +3850,77 @@ const std::array<std::pair<const uint32_t*, size_t>, 21> codes_conversion{{
   // Upload buffer full: submit what has been recorded and continue in the other slot, with its empty
   // upload buffer (Record only waits if that slot's last submission is still on the GPU).
   bool SendAndWait() override { return SendWork(false) && Record(); }
+
+  // ds2_native_partial_send (fh2-recompiled 79212ba, same renderer family): the recording so far goes to the GPU
+  // now, without a fence, and goes on in this slot with new command buffers from its pools (reset with them).
+  // The slot's final submission still carries its only fence, and the read-backs wait for it.
+  bool SendPartial() override {
+    if (!recording_) {
+      return false;
+    }
+    if (draws_) {
+      draws_->BeforeSend();  // closes the pass, collects the texture binds, flushes the upload buffer
+    }
+    std::array<VkCommandBuffer, 2> buffers{};
+    uint32_t n = 0;
+    if (recording_upload_) {
+      recording_upload_ = false;
+      VkMemoryBarrier after_uploads{};  // as in SendWork
+      after_uploads.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+      after_uploads.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+      after_uploads.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+      dfn_.vkCmdPipelineBarrier(commands_upload_, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after_uploads, 0, nullptr, 0, nullptr);
+      if (dfn_.vkEndCommandBuffer(commands_upload_) != VK_SUCCESS) {
+        return false;
+      }
+      buffers[n++] = commands_upload_;
+    }
+    if (dfn_.vkEndCommandBuffer(commands_work_) != VK_SUCCESS) {
+      return false;
+    }
+    buffers[n++] = commands_work_;
+    VkSubmitInfo send{};
+    send.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    send.commandBufferCount = n;
+    send.pCommandBuffers = buffers.data();
+    {
+      const auto queue = vulkan_device_->AcquireQueue(family_, 0);
+      if (dfn_.vkQueueSubmit(queue.queue(), 1, &send, VK_NULL_HANDLE) != VK_SUCCESS) {
+        return false;
+      }
+    }
+    SlotWork& slot = slots_[slot_];
+    const uint32_t k = slot.partials++;
+    while (slot.extra_work.size() <= k) {
+      VkCommandBufferAllocateInfo reserve{};
+      reserve.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+      reserve.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      reserve.commandBufferCount = 1;
+      VkCommandBuffer work = VK_NULL_HANDLE, upload = VK_NULL_HANDLE;
+      reserve.commandPool = slot.pool_work;
+      if (dfn_.vkAllocateCommandBuffers(device_, &reserve, &work) != VK_SUCCESS) {
+        return false;
+      }
+      reserve.commandPool = slot.pool_upload;
+      if (dfn_.vkAllocateCommandBuffers(device_, &reserve, &upload) != VK_SUCCESS) {
+        return false;
+      }
+      slot.extra_work.push_back(work);
+      slot.extra_upload.push_back(upload);
+    }
+    commands_work_ = slot.extra_work[k];
+    commands_upload_ = slot.extra_upload[k];
+    VkCommandBufferBeginInfo start{};
+    start.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    start.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (dfn_.vkBeginCommandBuffer(commands_work_, &start) != VK_SUCCESS) {
+      return false;
+    }
+    ++generation_commands_;  // the draws bind everything again in the new buffer
+    ++report_partial_sends_;
+    return true;
+  }
 
   // The function above submits and continues; this one waits. Same order as every other place that must
   // destroy something the GPU might still be reading (see the resolved texture that changes size).
@@ -10205,6 +10280,7 @@ const std::array<std::pair<const uint32_t*, size_t>, 21> codes_conversion{{
     if (slot.pool_depth_resolve_ms) dfn_.vkResetDescriptorPool(device_, slot.pool_depth_resolve_ms, 0);
     if (slot.pool_stencil_copy) dfn_.vkResetDescriptorPool(device_, slot.pool_stencil_copy, 0);
     slot.conversions_edram = 0;
+    slot.partials = 0;
     commands_work_ = slot.work;
     commands_upload_ = slot.upload;
     recording_upload_ = false;
@@ -10746,14 +10822,17 @@ const std::array<std::pair<const uint32_t*, size_t>, 21> codes_conversion{{
       report_ns_full_sends_ = e.ns_full_sends;
     }
     REXLOG_INFO("[native] submissions since last report: {} ({} for a full upload buffer, {:.1f} ms inside "
-                "them); slot fence waits {} ({:.1f} ms); full GPU drains:{}",
-                report_sends_, full_count, double(ns_full) / 1e6, waits_gpu_ - report_waits_gpu_,
-                double(ns_waits_gpu_ - report_ns_waits_gpu_) / 1e6, list.empty() ? " none" : list);
+                "them, {} partial); slot fence waits {} ({:.1f} ms); full GPU drains:{}",
+                report_sends_, full_count, double(ns_full) / 1e6, report_partial_sends_,
+                waits_gpu_ - report_waits_gpu_, double(ns_waits_gpu_ - report_ns_waits_gpu_) / 1e6,
+                list.empty() ? " none" : list);
     report_sends_ = 0;
+    report_partial_sends_ = 0;
     report_waits_gpu_ = waits_gpu_;
     report_ns_waits_gpu_ = ns_waits_gpu_;
   }
   uint64_t report_sends_ = 0, report_full_sends_ = 0, report_ns_full_sends_ = 0;
+  uint64_t report_partial_sends_ = 0;  // ds2_native_partial_send, in the "submissions since last report" line
   uint64_t report_waits_gpu_ = 0, report_ns_waits_gpu_ = 0;
 
   void WaitGpu() {

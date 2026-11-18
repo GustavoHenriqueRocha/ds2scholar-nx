@@ -184,6 +184,9 @@ class ContextTargets {
   }
   // Submits what was recorded and continues in the other slot, with its upload buffer empty.
   virtual bool SendAndWait() = 0;
+  // ds2_native_partial_send: submits what was recorded without a fence and goes on in the same slot (same upload
+  // buffer, fence and read-backs). false = nothing was submitted.
+  virtual bool SendPartial() { return false; }
   // Waits for the GPU to finish everything pending and starts recording again. It is expensive (a
   // one-frame stutter), so it is only used as a last resort when memory runs out: with the GPU idle,
   // textures can be released regardless of when they were last used, because none is in use.
