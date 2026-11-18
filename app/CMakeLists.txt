@@ -65,6 +65,8 @@ set(DS2_SOURCES
     src/me/native/sa2_native_draws.cpp
     src/me/native/sa2_deferred_recording.cpp
     src/me/native/sa2_native_targets.cpp
+    # ds2-deko3d: the deko3d targets (sa2_native_deko3d = true; device and presentation only so far).
+    src/me/native/sa2_native_deko3d.cpp
     src/me/native/sa2_native_shaders.cpp
     src/me/native/sa2_native_textures_pool.cpp
     src/me/native/sa2_shader_library.cpp
@@ -232,6 +234,8 @@ if(REXGLUE_PLATFORM_SWITCH)
         target_compile_options(ds2_recomp PRIVATE -fomit-frame-pointer)
     endif()
     message(STATUS "ds2: game code omit frame pointer ${DS2_SWITCH_OMIT_FRAME_POINTER}")
+    # ds2-deko3d: libdeko3d (devkitPro libnx) for sa2_native_deko3d; only linked in, unused while the key is off.
+    target_link_libraries(ds2 PRIVATE deko3d nx)
     # ds2_register.cpp is one generated function of ~30,000 SetFunction calls run once at start-up; sa2-nx measured
     # 771-927 s of GCC -O3 on its own (the critical path of the build). -O0 changes a few microseconds of start-up.
     set(_ds2_register "${CMAKE_CURRENT_SOURCE_DIR}/generated/default/ds2_register.cpp")

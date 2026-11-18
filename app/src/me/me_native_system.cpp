@@ -124,6 +124,12 @@ REXCVAR_DEFINE_BOOL(sa2_native_edram4_several_rect, true, "SA2 renderer",
                     "Native renderer: auto-index rect lists of 2..8 rectangles (D3D Clear of several regions) are "
                     "proven per rectangle, so mode 4 skips the transfers they overwrite. false = only single rects")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2-deko3d (stage E3): deko3d instead of Vulkan/NVK. Only the device, its memory and the presentation exist so far:
+// the window shows a pulsing background and bars of the frame's draws and copies, not the game.
+REXCVAR_DEFINE_BOOL(sa2_native_deko3d, false, "SA2 renderer",
+                    "Native renderer on deko3d instead of Vulkan (Switch, stage E3: the game is not drawn yet, the "
+                    "window shows the frame's draws and copies as bars). false = Vulkan/NVK")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 // sa2-nx: on by default on the Switch (the emulated GPU runs at a few frames per second there); on PC the emulated
 // GPU stays the default reference (sa2_renderer_native = true in sa2.toml or REX_SA2_RENDERER_NATIVE).
 #if REX_PLATFORM_SWITCH
@@ -1093,8 +1099,14 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   ~NativeGraphicsSystem() override { Shutdown(); }
 
   X_STATUS SetupPresentation(rex::ui::WindowedAppContext* app_context) override {
-    if (presenter_) return X_STATUS_SUCCESS;
+    if (presenter_ || deko3d_) return X_STATUS_SUCCESS;
     app_context_ = app_context;
+    if (REXCVAR_GET(sa2_native_deko3d)) {
+      // The deko3d targets own the window (nwindowGetDefault) from their first use; no Vulkan device, no presenter.
+      deko3d_ = true;
+      REXLOG_INFO("[native] sa2_native_deko3d: deko3d renderer, no Vulkan device");
+      return X_STATUS_SUCCESS;
+    }
     if (!provider_) {
       // The XenosRecomp SPIR-V needs device features that must be requested at creation.
       rex::cvar::SetFlagByName("vulkan_native_shader_features", "true");
@@ -2374,8 +2386,9 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   // --- Native drawing ---
   bool EnsureTargets() {
     if (!targets_ && !targets_failed_) {
-      targets_ = sa2::native::TargetsNative::Create(provider_ ? provider_->vulkan_device() : nullptr,
-                                                        memory_);
+      targets_ = deko3d_ ? sa2::native::TargetsNative::CreateDeko3d(memory_)
+                         : sa2::native::TargetsNative::Create(provider_ ? provider_->vulkan_device() : nullptr,
+                                                              memory_);
       if (!targets_) {
         targets_failed_ = true;
         REXLOG_ERROR("[native] could not create the native render targets");
@@ -3736,7 +3749,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   }
 
   void Present() {
-    if (!presenter_ || !EnsureTargets()) return;
+    if ((!presenter_ && !deko3d_) || !EnsureTargets()) return;
     if (gamma_sent_version_ != gamma_version_) {
       gamma_sent_version_ = gamma_version_;
       targets_->RampGamma(gamma_ramp_);
@@ -4038,6 +4051,7 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   rex::ui::WindowedAppContext* app_context_ = nullptr;
   std::unique_ptr<rex::ui::vulkan::VulkanProvider> provider_;
   std::unique_ptr<rex::ui::Presenter> presenter_;
+  bool deko3d_ = false;  // sa2_native_deko3d: no provider_ nor presenter_
   rex::runtime::FunctionDispatcher* dispatcher_ = nullptr;
   rex::system::KernelState* kernel_state_ = nullptr;
   rex::memory::Memory* memory_ = nullptr;

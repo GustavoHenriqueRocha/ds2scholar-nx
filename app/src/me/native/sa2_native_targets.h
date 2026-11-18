@@ -58,6 +58,9 @@ class TargetsNative {
   // nullptr if the device is missing or presentation could not be set up.
   static std::unique_ptr<TargetsNative> Create(const rex::ui::vulkan::VulkanDevice* vulkan_device,
                                                 rex::memory::Memory* memory);
+  // sa2_native_deko3d (ds2-deko3d, Switch only): deko3d device and swapchain, no Vulkan
+  // (sa2_native_deko3d.cpp). nullptr if they could not be created.
+  static std::unique_ptr<TargetsNative> CreateDeko3d(rex::memory::Memory* memory);
   virtual ~TargetsNative() = default;
 
   // Resolve and/or clear. false if it could not be done (each cause is logged once).
