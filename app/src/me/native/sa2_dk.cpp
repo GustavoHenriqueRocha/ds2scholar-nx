@@ -460,7 +460,16 @@ DkImageView View(ImageId id, const ViewDesc& desc) {
   DkImageView view;
   ImageObject* object = Object(id);
   dkImageViewDefaults(&view, object ? &object->image : nullptr);
-  if (!object) return view;
+  if (!object) {
+    // A dead or stale id: the caller records nothing with it (pImage is null). Logged a few times, so a
+    // use-after-destroy shows in the log instead of as a missing copy or texture.
+    static uint32_t logged = 0;
+    if (id != kNoImage && logged < 16) {
+      ++logged;
+      REXLOG_WARN("[dk] view of a dead image id {:#x} (slot {}, generation {})", id, id & 0xFFFFF, id >> 20);
+    }
+    return view;
+  }
   if (desc.type != DkImageType_None) view.type = desc.type;
   if (desc.format != DkImageFormat_None) view.format = desc.format;
   for (uint32_t i = 0; i < 4; ++i) view.swizzle[i] = desc.swizzle[i];
@@ -882,6 +891,7 @@ DkImageFormat FromVk(VkFormat format) {
     case VK_FORMAT_D32_SFLOAT: return DkImageFormat_ZF32;
     case VK_FORMAT_D32_SFLOAT_S8_UINT: return DkImageFormat_ZF32_X24S8;
     case VK_FORMAT_S8_UINT: return DkImageFormat_S8;
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: return DkImageFormat_RGB_BC1;
     case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return DkImageFormat_RGBA_BC1;
     case VK_FORMAT_BC2_UNORM_BLOCK: return DkImageFormat_RGBA_BC2;
     case VK_FORMAT_BC3_UNORM_BLOCK: return DkImageFormat_RGBA_BC3;
