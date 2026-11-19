@@ -3942,6 +3942,14 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       causes += fmt::format(" {}x{}", st.causes[i].first, st.causes[i].second);
     }
     if (!causes.empty()) REXLOG_INFO("[native] rejection causes (code x count):{}", causes);
+#if REX_PLATFORM_SWITCH || defined(__SWITCH__)
+    // [dk] The DKSH variants missed since the last report go to the SD card now (returns at once with none). Before,
+    // only the prewarm end and the destructor wrote them, and closing with HOME lost the rest (19/11: n974 2020A360
+    // only in the log, not in missing.txt).
+    if (deko3d_) {
+      if (sa2::native::LibraryDksh* const dksh = sa2::native::ActiveLibraryDksh()) dksh->FlushMissing();
+    }
+#endif
     if (!missing_draw_pairs_.empty()) {
       std::vector<std::pair<std::pair<uint64_t, uint64_t>, uint64_t>> ranked(
           missing_draw_pairs_.begin(), missing_draw_pairs_.end());
