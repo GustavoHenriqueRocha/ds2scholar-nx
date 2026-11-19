@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <string_view>
 #include <utility>
 
 #include <rex/assert.h>
@@ -19,6 +20,7 @@
 #include <rex/logging.h>
 #include <rex/platform.h>
 #include <rex/thread.h>
+#include <rex/ui/present_effect_cycle.h>
 #include <rex/ui/presenter.h>
 #include <rex/ui/window.h>
 
@@ -413,23 +415,20 @@ extern "C" void RexShowStatus(const char* text) {
 }
 
 // L+R+left stick (switch_input_driver.cpp), on the UI thread: present_effect bilinear -> fsr -> cas -> bilinear, applied
-// to the live presenter at once. Returns the new effect's name (empty if there is no presenter or no FidelityFX).
+// to the live presenter at once. Returns the new effect's name (empty without FidelityFX).
 extern "C" const char* RexPresenterCycleEffect(void) {
 #if defined(REX_HAS_FIDELITYFX_SDK)
+  // Without a presenter (deko3d output) the cvar still changes: the dk output reads it every frame.
   rex::ui::Presenter* const presenter = g_effect_presenter.load(std::memory_order_acquire);
-  if (!presenter) return "";
-  static const char* const kOrder[] = {"bilinear", "fsr", "cas"};
-  const std::string current = REXCVAR_GET(present_effect);
-  size_t next = 0;
-  for (size_t i = 0; i < std::size(kOrder); ++i) {
-    if (current == kOrder[i]) next = (i + 1) % std::size(kOrder);
-  }
-  REXCVAR_SET(present_effect, std::string(kOrder[next]));
-  presenter->SetGuestOutputPaintConfigFromUIThread(BuildGuestOutputPaintConfigFromCVar());
-  REXLOG_INFO("Presenter: present_effect = {} (L+R+left stick)", kOrder[next]);
+  const char* const name = rex::ui::CyclePresentEffect(
+      [] { return std::string(REXCVAR_GET(present_effect)); },
+      [](const char* e) { REXCVAR_SET(present_effect, std::string(e)); }, presenter,
+      [](rex::ui::Presenter* p) { p->SetGuestOutputPaintConfigFromUIThread(BuildGuestOutputPaintConfigFromCVar()); });
+  REXLOG_INFO("Presenter: present_effect = {} (L+R+left stick){}", name, presenter ? "" : ", no SDK presenter");
+  const std::string_view n = name;
   static const char* const kNotice[] = {"Upscaler: bilinear", "Upscaler: FSR 1", "Upscaler: CAS"};
-  RexShowStatus(kNotice[next]);
-  return kOrder[next];
+  RexShowStatus(kNotice[n == "fsr" ? 1 : n == "cas" ? 2 : 0]);
+  return name;
 #else
   return "";
 #endif
