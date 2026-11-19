@@ -221,6 +221,14 @@ REXCVAR_DEFINE_INT32(sa2_native_verify_n, 2048, "SA2 renderer",
                      "uses and compared; any difference logs DIFFERENCE and turns that switch off. 0 = no check")
     .range(0, 2147483647)
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2scholar-nx (2026-11-19): console profile ds2_037 (19-11k), ring thread: the VS identity predicate inlined in
+// AcceptVertexShaderIdentity was 4.6 % of the running samples (a scalar word-by-word loop, ~1 full compare per draw).
+REXCVAR_DEFINE_BOOL(ds2_vs_identity_segmented, false, "DS2",
+                    "Ring: the VS identity check (VertexShaderIdentityMatches) compares the words between the declared "
+                    "fetch triples with memcmp and the fetch words with their masks directly; exact, same answer "
+                    "(me_shader_identity.h; checked against the old one for the first sa2_native_verify_n uses). "
+                    "false = word by word, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_INT32(sa2_native_vs_identity_tolerance, 0, "SA2 renderer",
                      "Experimental: a vertex shader the ring loaded may differ from its library candidate (same size, "
@@ -1156,6 +1164,12 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     pm4_fast_ = REXCVAR_GET(sa2_native_pm4_fast);
     check_identity_ = check_pairing_ = check_raw_ = check_pm4_ = check_objects_ =
         uint32_t(std::max<int32_t>(0, REXCVAR_GET(sa2_native_verify_n)));
+    identity_segmented_ = REXCVAR_GET(ds2_vs_identity_segmented);
+    check_segmented_ = check_identity_;
+    REXLOG_INFO("[native] VS identity check by runs of words (ds2_vs_identity_segmented) = {}",
+                identity_segmented_ ? fmt::format("YES, the first {} checked against the word-by-word one",
+                                                  check_segmented_)
+                                    : std::string("no, word by word"));
     if (identity_flat_ || pairing_fast_ || raw_microcode_ || pm4_fast_)
       REXLOG_INFO("[native] ring CPU switches: flat identity {}, fast pairing {}, raw microcode compare {}, fast PM4 "
                   "runs {}; self-check of the first {} uses of each", identity_flat_, pairing_fast_, raw_microcode_,
@@ -2406,11 +2420,28 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   }
 
   bool ComputeVertexIdentity(const sa2::native::ShaderEntry* candidate) const {
-    if (VertexShaderIdentityMatches(
-            {ShaderIdentityStage::Vertex, vs_microcode_},
-            {candidate->vertices ? ShaderIdentityStage::Vertex : ShaderIdentityStage::Pixel, candidate->microcode},
-            candidate->elements, [](const auto& element) { return element.instruction; }))
-      return true;
+    const ShaderIdentityView loaded{ShaderIdentityStage::Vertex, vs_microcode_};
+    const ShaderIdentityView selected{
+        candidate->vertices ? ShaderIdentityStage::Vertex : ShaderIdentityStage::Pixel, candidate->microcode};
+    const auto instruction = [](const auto& element) { return element.instruction; };
+    bool same;
+    if (identity_segmented_) {  // ds2_vs_identity_segmented
+      same = VertexShaderIdentityMatchesSegmented(loaded, selected, candidate->elements, instruction);
+      if (check_segmented_ > 0) {
+        --check_segmented_;
+        if (same != VertexShaderIdentityMatches(loaded, selected, candidate->elements, instruction)) {
+          sa2::enh::VerifyDifference();
+          REXLOG_ERROR("[native] DIFFERENCE: segmented VS identity check (ds2_vs_identity_segmented) disagrees with the "
+                       "word-by-word one (entry n{}, {} words); the old path from now on",
+                       candidate->number, vs_microcode_.size());
+          identity_segmented_ = false;
+          same = !same;
+        }
+      }
+    } else {
+      same = VertexShaderIdentityMatches(loaded, selected, candidate->elements, instruction);
+    }
+    if (same) return true;
     // sa2_gpu_vs_fetch_reorder: only the entry IdentifyShader chose for this very load, and only while the proof holds
     // on its words (sa2::native::FetchReordered).
     return candidate == vs_reorder_entry_ && sa2::native::FetchReordered(*candidate, vs_microcode_);
@@ -4061,6 +4092,9 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   bool identity_flat_ = false, pairing_fast_ = false, raw_microcode_ = false, pm4_fast_ = false;
   bool identity_accept_fast_ = false;  // sa2_cpu_ring_identity_accept_fast (off for the session after a DIFFERENCE)
   uint32_t check_identity_ = 0, check_pairing_ = 0, check_raw_ = 0, check_pm4_ = 0, check_objects_ = 0;
+  // ds2_vs_identity_segmented (ComputeVertexIdentity is const: off for the session after a DIFFERENCE)
+  mutable bool identity_segmented_ = false;
+  mutable uint32_t check_segmented_ = 0;
   std::vector<uint32_t> raw_vs_, raw_ps_;  // the guest words of the last IM_LOAD of each stage (raw_microcode_)
   bool raw_vs_valid_ = false, raw_ps_valid_ = false;
   std::map<std::pair<uint64_t, uint64_t>, uint64_t> missing_draw_pairs_;
