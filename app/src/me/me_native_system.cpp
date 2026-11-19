@@ -61,6 +61,7 @@
 #include <rex/filesystem.h>
 #include <rex/graphics/registers.h>
 
+#include "native/me_query_draw_skip.h"
 #include "native/sa2_deferred_recording.h"
 #include "native/sa2_native_targets.h"
 #include "native/sa2_native_shaders.h"
@@ -228,6 +229,14 @@ REXCVAR_DEFINE_BOOL(ds2_vs_identity_segmented, false, "DS2",
                     "fetch triples with memcmp and the fetch words with their masks directly; exact, same answer "
                     "(me_shader_identity.h; checked against the old one for the first sa2_native_verify_n uses). "
                     "false = word by word, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2scholar-nx (2026-11-19): every occlusion query is answered on the CPU (EVENT_WRITE_ZPD: 1000 samples), so the
+// draws between a ZPD begin and its end count no samples. Console log ds2_045 (19-11q): the 640x360 pass resolved to
+// 13188000 (0 reads) had ~445 draws per frame.
+REXCVAR_DEFINE_BOOL(ds2_skip_query_draws, false, "DS2",
+                    "Ring: a draw between an EVENT_WRITE_ZPD begin and its end is dropped when it writes no color, "
+                    "no depth and no stencil (me_query_draw_skip.h; the query answer stays 1000 samples). Counted "
+                    "every 10 s. false = drawn, as before")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 REXCVAR_DEFINE_INT32(sa2_native_vs_identity_tolerance, 0, "SA2 renderer",
@@ -1166,6 +1175,9 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
         uint32_t(std::max<int32_t>(0, REXCVAR_GET(sa2_native_verify_n)));
     identity_segmented_ = REXCVAR_GET(ds2_vs_identity_segmented);
     check_segmented_ = check_identity_;
+    skip_query_draws_ = REXCVAR_GET(ds2_skip_query_draws);
+    REXLOG_INFO("[native] draws inside occlusion queries (ds2_skip_query_draws) = {}",
+                skip_query_draws_ ? "dropped when they write no color, depth or stencil" : "drawn, as before");
     REXLOG_INFO("[native] VS identity check by runs of words (ds2_vs_identity_segmented) = {}",
                 identity_segmented_ ? fmt::format("YES, the first {} checked against the word-by-word one",
                                                   check_segmented_)
@@ -1967,6 +1979,10 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
           std::memset(counts, 0, sizeof(*counts));
           // SDK fallback: begin = 0, end = 1000 samples.
           if (end) counts->Total_A = counts->ZPass_A = 1000;
+          if (skip_query_draws_) {  // ds2_skip_query_draws: the draws until the end count nothing
+            query_window_.OnZpd(end);
+            ++(end ? query_ends_ : query_begins_);
+          }
           static uint32_t query_reports = 0;
           if (query_reports++ < 30) {
             REXLOG_INFO("[native] ZPD {} at {:08X}: {} samples", end ? "end" : "begin", address,
@@ -3619,6 +3635,22 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
     }
     identity_memo_pending_ = false;
     }  // the identity checks (not a memo hit)
+    if (skip_query_draws_ && query_window_.open) {
+      // ds2_skip_query_draws: inside an occlusion query (answered on the CPU), a draw that writes nothing has no
+      // effect at all. Targets are bound (EnsureTargets above) exactly as before; only the submission is dropped.
+      namespace g = rex::graphics;
+      me::native::QueryDrawInput q;
+      q.mode_control = Register(kRegRbModeControl);
+      q.color_mask = Register(g::XE_GPU_REG_RB_COLOR_MASK);
+      q.depth_control = Register(g::XE_GPU_REG_RB_DEPTHCONTROL);
+      q.stencil_front = Register(g::XE_GPU_REG_RB_STENCILREFMASK);
+      q.stencil_back = Register(g::XE_GPU_REG_RB_STENCILREFMASK_BF);
+      q.ps_known = draw_ps_ != nullptr;
+      q.ps_outputs = draw_ps_ ? draw_ps_->outputs : 0;
+      const auto verdict = me::native::ClassifyQueryDraw(q);
+      ++query_verdicts_[size_t(verdict)];
+      if (verdict == me::native::QueryDrawVerdict::kSkip) return;
+    }
     sa2::native::SubmissionDraw request;
     request.registers = registers_.data();
     request.vs = draw_vs_;
@@ -3872,6 +3904,19 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
       report_ring_busy_ns_ = ring_busy_ns_;
       report_ring_wait_ns_ = ring_wait_ns_;
     }
+    if (skip_query_draws_) {  // ds2_skip_query_draws, this interval
+      using V = me::native::QueryDrawVerdict;
+      const auto& n = query_verdicts_;
+      const uint64_t refused = n[size_t(V::kRefuseMode)] + n[size_t(V::kRefuseColor)] + n[size_t(V::kRefuseDepth)] +
+                               n[size_t(V::kRefuseStencil)];
+      REXLOG_INFO("[native] query draws (ds2_skip_query_draws, {:.1f} s): {} ZPD begin, {} ZPD end; {} draws inside, "
+                  "{} skipped, {} refused (color {}, depth {}, stencil {}, mode {}); query {}", secs, query_begins_,
+                  query_ends_, n[size_t(V::kSkip)] + refused, n[size_t(V::kSkip)], refused,
+                  n[size_t(V::kRefuseColor)], n[size_t(V::kRefuseDepth)], n[size_t(V::kRefuseStencil)],
+                  n[size_t(V::kRefuseMode)], query_window_.open ? "open" : "closed");
+      query_begins_ = query_ends_ = 0;
+      query_verdicts_ = {};
+    }
     sa2::api::Report();  // the native Direct3D layer (sa2_api_*)
     if (g_direct_state.active) {
       using namespace direct;
@@ -4095,6 +4140,11 @@ class NativeGraphicsSystem final : public rex::system::IGraphicsSystem {
   // ds2_vs_identity_segmented (ComputeVertexIdentity is const: off for the session after a DIFFERENCE)
   mutable bool identity_segmented_ = false;
   mutable uint32_t check_segmented_ = 0;
+  // ds2_skip_query_draws: the open occlusion query (EVENT_WRITE_ZPD) and the counts of this report interval
+  bool skip_query_draws_ = false;
+  me::native::QueryWindow query_window_;
+  uint64_t query_begins_ = 0, query_ends_ = 0;
+  std::array<uint64_t, size_t(me::native::QueryDrawVerdict::kCount)> query_verdicts_{};
   std::vector<uint32_t> raw_vs_, raw_ps_;  // the guest words of the last IM_LOAD of each stage (raw_microcode_)
   bool raw_vs_valid_ = false, raw_ps_valid_ = false;
   std::map<std::pair<uint64_t, uint64_t>, uint64_t> missing_draw_pairs_;
