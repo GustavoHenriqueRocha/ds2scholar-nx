@@ -21,6 +21,7 @@
 #if SA2_DK_AVAILABLE
 
 #include "sa2_native_dk_output_plan.h"
+#include "sa2_native_dk_rescale_keep.h"
 #include "sa2_native_dk_shaders.h"
 #include "sa2_native_draws.h"
 #include "sa2_native_shaders.h"  // SA2_REPORT_RING
@@ -243,8 +244,8 @@ void TargetsDk::RescaleAll(uint32_t q) {
   // ds2scholar-nx (ds2_dynamic_resolution_keep): in handheld each image keeps its other-scale twin (alternates_), so a
   // switch swaps handles and blits the content: no GPU wait, no allocation after the first time, nothing destroyed
   // that queued work may still read. Docking takes the old path below, which waits for the GPU and frees the twins.
-  const bool keep = REXCVAR_GET(ds2_dynamic_resolution_keep) && sa2::render::DynamicResolutionActive() &&
-                    !sa2::render::Docked();
+  // deko3d: also the fixed mode's switches, not only the dynamic resolution's (sa2_native_dk_rescale_keep.h).
+  const bool keep = KeepScaleTwins(REXCVAR_GET(ds2_dynamic_resolution_keep), sa2::render::Docked());
   if (keep) {
     RescaleKeep(q, started, q_old, bytes_old);
     return;
