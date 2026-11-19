@@ -2670,9 +2670,21 @@ layout(binding = 0) uniform sampler2D InputTexture;
 layout(std140, binding = 0) uniform Constants {
   uvec4 con[4];
 } constants;
-AF4 FsrEasuRF(AF2 p) { return textureGather(InputTexture, p, 0); }
-AF4 FsrEasuGF(AF2 p) { return textureGather(InputTexture, p, 1); }
-AF4 FsrEasuBF(AF2 p) { return textureGather(InputTexture, p, 2); }
+// The gather as 4 texelFetch, in GLSL's order (i0j1, i1j1, i1j0, i0j0), the edge clamped. Not textureGather: uam
+// compiles this shader's gathers wrong (19/11, ds2-deko3d bench-semantica tests 15-18: R right, G and B from other
+// texels, so the 540p FSR came out red; a gather alone in a fragment shader is right, test 16).
+AF4 EasuGather(AF2 p, int c) {
+  ivec2 size = textureSize(InputTexture, 0);
+  ivec2 b = ivec2(floor(p * AF2(size) - AF2_(0.5)));
+  ivec2 m = size - 1;
+  return AF4(texelFetch(InputTexture, clamp(b + ivec2(0, 1), ivec2(0), m), 0)[c],
+             texelFetch(InputTexture, clamp(b + ivec2(1, 1), ivec2(0), m), 0)[c],
+             texelFetch(InputTexture, clamp(b + ivec2(1, 0), ivec2(0), m), 0)[c],
+             texelFetch(InputTexture, clamp(b, ivec2(0), m), 0)[c]);
+}
+AF4 FsrEasuRF(AF2 p) { return EasuGather(p, 0); }
+AF4 FsrEasuGF(AF2 p) { return EasuGather(p, 1); }
+AF4 FsrEasuBF(AF2 p) { return EasuGather(p, 2); }
 //_____________________________________________________________/\_______________________________________________________________
 //==============================================================================================================================
 //
