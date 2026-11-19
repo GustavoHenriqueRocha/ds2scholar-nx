@@ -1,6 +1,7 @@
 // SA2 - native renderer on deko3d: the base layer (sa2_dk.h).
 
 #include "sa2_dk.h"
+#include "sa2_dk_flush_rule.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -17,6 +18,16 @@
 REXCVAR_DEFINE_BOOL(sa2_dk_barrier_full, false, "SA2 renderer",
                     "deko3d renderer (diagnosis): every named barrier becomes DkBarrier_Full with every invalidation. "
                     "A picture that changes with it on points at a barrier mapping (sa2_dk.cpp, Barrier)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(sa2_dk_flush_before_wait, false, "SA2 renderer",
+                    "deko3d renderer: WaitOrder flushes the queue (dkQueueFlush) before waiting for an order not yet "
+                    "sent to the GPU. Submit does not send (dkQueueSignalFence's flush is a cache flush); without it, "
+                    "a wait between two presents (3 texture update splits in a row, WaitGpu) hangs (ds2_035/036)")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+REXCVAR_DEFINE_BOOL(sa2_dk_flush_on_submit, false, "SA2 renderer",
+                    "deko3d renderer: every fenced Submit also flushes the queue (dkQueueFlush), so the GPU starts "
+                    "that work now, as vkQueueSubmit, instead of at the next present or partial send. false = as "
+                    "before")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace sa2::dk {
@@ -70,6 +81,8 @@ struct State {
   std::array<FenceSlot, kFences> fences{};
   uint64_t next_order = 1;
   uint64_t completed = 0;
+  uint64_t flushed = 0;  // highest order known sent to the GPU (dkQueueFlush / dkQueuePresentImage / WaitIdle)
+  uint64_t flushes_before_wait = 0;
   std::deque<Release> releases;
   bool error_logged = false;
   // Images.
@@ -234,9 +247,16 @@ uint64_t Submit(DkCmdList list) {
   FenceSlot& slot = g->fences[order % kFences];
   if (slot.order && slot.order > g->completed) WaitOrder(slot.order);  // ring full: the oldest must be done
   dkQueueSubmitCommands(g->queue, list);
-  dkQueueSignalFence(g->queue, &slot.fence, true);  // flush: the GPU starts now, as vkQueueSubmit
+  // `true` flushes the GPU caches before the signal; it does NOT send the commands to the GPU (only dkQueueFlush,
+  // a present, WaitIdle or a full queue command memory do: sa2_dk_flush_rule.h).
+  dkQueueSignalFence(g->queue, &slot.fence, true);
   slot.order = order;
   ++g->next_order;
+  static const bool flush_on_submit = REXCVAR_GET(sa2_dk_flush_on_submit);
+  if (flush_on_submit) {
+    dkQueueFlush(g->queue);
+    g->flushed = order;
+  }
   CollectReleases();
   return order;
 }
@@ -244,6 +264,7 @@ uint64_t Submit(DkCmdList list) {
 void SubmitUnfenced(DkCmdList list) {
   dkQueueSubmitCommands(g->queue, list);
   dkQueueFlush(g->queue);
+  g->flushed = g->next_order - 1;
 }
 
 uint64_t CompletedOrder() {
@@ -259,6 +280,15 @@ uint64_t CompletedOrder() {
 bool WaitOrder(uint64_t order, int64_t timeout_ns) {
   if (!g || order <= CompletedOrder()) return true;
   if (order >= g->next_order) order = g->next_order - 1;  // not submitted yet: wait for what was
+  static const bool flush_before_wait = REXCVAR_GET(sa2_dk_flush_before_wait);
+  if (FlushBeforeWait(flush_before_wait, order, g->completed, g->flushed)) {
+    // ds2-deko3d (19/11, ds2_036): the order is still in the queue; its fence would never be reached.
+    dkQueueFlush(g->queue);
+    g->flushed = g->next_order - 1;
+    if (++g->flushes_before_wait <= 8 || (g->flushes_before_wait & 1023) == 0)
+      REXLOG_INFO("[dk] flush before wait {}: order {} (completed {}, next {})", g->flushes_before_wait, order,
+                  g->completed, g->next_order);
+  }
   FenceSlot& slot = g->fences[order % kFences];
   // ds2-deko3d (19/11, ds2_027/ds2_035: the ring thread stopped here for good): without a timeout it still waits
   // for ever, but in 2 s slices, and each slice that runs out says whether the queue is in error and what the GPU
@@ -285,6 +315,7 @@ void WaitIdle() {
   if (!g) return;
   dkQueueWaitIdle(g->queue);
   g->completed = g->next_order - 1;
+  g->flushed = g->completed;
   CollectReleases();
 }
 
@@ -905,7 +936,10 @@ DkImageView Window::View(int slot) {
   return view;
 }
 
-void Window::Present(int slot) { dkQueuePresentImage(g->queue, swapchain_, slot); }
+void Window::Present(int slot) {
+  dkQueuePresentImage(g->queue, swapchain_, slot);  // flushes the queue
+  g->flushed = g->next_order - 1;
+}
 
 // --- Formats --------------------------------------------------------------------------------------------------
 
