@@ -260,7 +260,15 @@ bool WaitOrder(uint64_t order, int64_t timeout_ns) {
   if (!g || order <= CompletedOrder()) return true;
   if (order >= g->next_order) order = g->next_order - 1;  // not submitted yet: wait for what was
   FenceSlot& slot = g->fences[order % kFences];
-  if (slot.order == order && dkFenceWait(&slot.fence, timeout_ns) != DkResult_Success) {
+  // ds2-deko3d (19/11, ds2_027/ds2_035: the ring thread stopped here for good): without a timeout it still waits
+  // for ever, but in 2 s slices, and each slice that runs out says whether the queue is in error and what the GPU
+  // has not finished.
+  if (slot.order == order && timeout_ns < 0) {
+    for (uint32_t slices = 1; dkFenceWait(&slot.fence, 2'000'000'000) != DkResult_Success; ++slices) {
+      REXLOG_ERROR("[dk] GPU wait: order {} not done after {} s (completed {}, next {}, queue in error {})", order,
+                   2 * slices, CompletedOrder(), g->next_order, dkQueueIsInErrorState(g->queue));
+    }
+  } else if (slot.order == order && dkFenceWait(&slot.fence, timeout_ns) != DkResult_Success) {
     if (dkQueueIsInErrorState(g->queue) && !g->error_logged) {
       g->error_logged = true;
       REXLOG_ERROR("[dk] the queue is in error state (order {})", order);
