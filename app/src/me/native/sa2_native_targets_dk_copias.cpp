@@ -268,6 +268,64 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
   }
   Prepare(*target_render);
   area_edram_ = {{x0, y0}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+  // ds2_skip_repeated_color_resolve (rules: sa2_native_dk_copy_rules.h). The previous real resolve into this address
+  // leaves the map now: only a real resolve below puts its own key back (a skipped one puts this one back), so a path
+  // that does not record (shrink, conversion blit, alias, deferred front copy, failure) leaves nothing to match.
+  static const bool skip_repeated_color = REXCVAR_GET(ds2_skip_repeated_color_resolve);  // kInitOnly
+  ColorResolveKey last_color{}, now_color{};
+  bool has_last_color = false;
+  if (skip_repeated_color && do_copy && resolved) {
+    if (const auto it = last_color_resolves_.find(base_resolved); it != last_color_resolves_.end()) {
+      last_color = it->second;
+      has_last_color = true;
+      last_color_resolves_.erase(it);
+    }
+  }
+  // true: this resolve repeats the previous one into the texture, which already holds its bytes (counted, skipped).
+  // false: resolve it; its key waits in now_color for RememberColor.
+  const auto RepeatedColor = [&](const Image& read, uint32_t path, int32_t bias, uint32_t width, uint32_t height,
+                                 bool reads_back) {
+    if (!skip_repeated_color || !resolved) return false;
+    now_color = ColorResolveKey{};
+    now_color.source = read.image;
+    now_color.render_target = target_render->image;
+    now_color.target = resolved->image.image;
+    now_color.address = base_resolved;
+    now_color.x0 = x0;
+    now_color.y0 = y0;
+    now_color.dx = dx;
+    now_color.dy = dy;
+    now_color.width = width;
+    now_color.height = height;
+    now_color.path = path;
+    now_color.exp_bias = bias;
+    now_color.source_format = color_format;
+    now_color.target_format = format_resolved_target;
+    now_color.drawn = draws_ ? draws_->Drawn() : 0;
+    now_color.transfers = edram4_transfers_all_;
+    now_color.restored = restored_pixels_;
+    now_color.edram_version = edram4_version_;
+    ColorResolveGate gate;
+    gate.enabled = true;
+    gate.mode4 = REXCVAR_GET(sa2_native_edram_alias_mode) == 4;
+    gate.multisampled = !me::native::IsSingleSample(uint32_t(read.sample_count)) ||
+                        !me::native::IsSingleSample(uint32_t(target_render->sample_count));
+    gate.alias_pending = resolved->alias_pending;
+    gate.front_pending = pending_fronts_.count(base_resolved) != 0;
+    gate.reads_back = reads_back;
+    gate.invalid_content = read.invalid_content || target_render->invalid_content;
+    if (!RepeatedColorResolve(gate, has_last_color ? &last_color : nullptr, now_color, resolved->revision))
+      return false;
+    last_color_resolves_[base_resolved] = last_color;
+    ++ds2_color_resolves_skipped_;
+    return true;
+  };
+  // After a real resolve (ResolvedWritten): its key with the texture's new revision.
+  const auto RememberColor = [&]() {
+    if (!skip_repeated_color || !resolved) return;
+    now_color.revision = resolved->revision;
+    last_color_resolves_[base_resolved] = now_color;
+  };
   // ds2-nx (ds2_resolve_7e3_direct): a UNORM10 view of the 7e3 scene, resolved straight from the 7e3 view.
   if (REXCVAR_GET(sa2_native_edram_alias_mode) == 4 && do_copy && resolved && !clear_color &&
       REXCVAR_GET(ds2_resolve_7e3_direct) && storage_unorm10_ && (color_format == 2 || color_format == 10) &&
@@ -280,6 +338,7 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
       const uint32_t height = std::min({uint32_t(y1 - y0), target_render->height - uint32_t(y0),
                                         resolved->image.height > dy ? resolved->image.height - dy : 0u});
       if (width && height) {
+        if (RepeatedColor(*scene, kColorResolveDirect7e3, 0, width, height, false)) return !edram4_operation_failed_;
         Prepare(*scene);
         Prepare(resolved->image);  // a new texture is still in VK_IMAGE_LAYOUT_UNDEFINED
         BeforeResolvedWrite(base_resolved, dx, dy, width, height);
@@ -289,6 +348,7 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
           ++copies_;
           ++ds2_direct_7e3_resolves_;
           ResolvedWritten(base_resolved, uint64_t(width) * height);
+          RememberColor();
           return !edram4_operation_failed_;
         }
       }
@@ -357,6 +417,8 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
           me::native::ColorResolveExponentBias(command, reg.rb_copy_dest_info);
       if (exp_bias && multisampled) {
         return Reject(14, "resolve exponent bias from a multisampled target (sa2_msaa) not supported");
+      } else if (exp_bias && RepeatedColor(*target_render, kColorResolveBias, exp_bias, width, height, false)) {
+        // ds2_skip_repeated_color_resolve: the texture already holds these bytes.
       } else if (exp_bias) {
         // The HDR loop requests -3 (1/8) on each convert resolve. A numeric
         // vkCmdCopyImage / blit ignores this and amplifies repeated feedback.
@@ -369,6 +431,7 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
         ++copies_;
         ++converted_copies_;
         ResolvedWritten(base_resolved, uint64_t(width) * height);
+        RememberColor();
       } else if (target_render->format != resolved->image.format) {
         // resolve with a format conversion (HDR render target to another texture format),
         // a 1 to 1 blit.
@@ -416,9 +479,38 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
       copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       copy.dstOffset = {int32_t(dx), int32_t(dy), 0};
       copy.extent = {width, height, 1};
+      // sa2_gpu_resolve_alias: the candidate source of the next resolve's alias (not when this command also
+      // clears: the render target changes right after the copy).
+      const auto AliasCandidate = [&]() {
+        if (g_resolve_alias.active && !clear_color && !((control >> 9) & 0x1)) {
+          last_resolve_.valid = true;
+          last_resolve_.target = target_render->image;
+          last_resolve_.x0 = x0;
+          last_resolve_.y0 = y0;
+          last_resolve_.width = width;
+          last_resolve_.height = height;
+          last_resolve_.address = base_resolved;
+          last_resolve_.image = resolved->image.image;
+          last_resolve_.revision = resolved->revision;
+          last_resolve_.dx = dx;
+          last_resolve_.dy = dy;
+          last_resolve_.drawn = draws_ ? draws_->Drawn() : 0;
+          last_resolve_.transfers = edram4_transfers_all_;
+          last_resolve_.restored = restored_pixels_;
+          last_resolve_.edram_version = edram4_version_;
+        }
+      };
+      // ds2_skip_repeated_color_resolve: never a resolve the guest reads back right after (ResolvedRead's test).
+      const int32_t read_texels = REXCVAR_GET(sa2_native_resolved_read_texels);
+      const bool reads_back = read_texels > 0 && uint64_t(width) * height <= uint64_t(read_texels) &&
+                              resolved->image.format == kColorFormat;
       // sa2_gpu_resolve_alias: the same bytes as the previous resolve's texture, which still holds them.
       if (MakeAlias(previous_resolve, *target_render, *resolved, base_resolved, x0, y0, dx, dy, width, height)) {
         ++copies_;  // a resolve like any other for the reports (the alias report counts how many were not copied)
+      } else if (RepeatedColor(*target_render, kColorResolveCopy, 0, width, height, reads_back)) {
+        // ds2_skip_repeated_color_resolve: the texture already holds these bytes (and is still the same alias
+        // candidate a real copy would leave: same image, revision and counters).
+        AliasCandidate();
       } else {
       BeforeResolvedWrite(base_resolved, dx, dy, width, height);  // sa2_gpu_resolve_alias (covers the rectangle)
       // sa2_native_lazy_front. The previous copy to this texture, if still deferred, is dropped (this
@@ -464,25 +556,8 @@ bool TargetsDk::CopyInternal(const RegistersCopy& reg) {
         ++copies_;
         ResolvedWritten(base_resolved, uint64_t(width) * height);
         ResolvedRead(reg, *resolved, x0, y0, dx, dy, width, height);
-        // sa2_gpu_resolve_alias: the candidate source of the next resolve's alias (not when this command also
-        // clears: the render target changes right after the copy).
-        if (g_resolve_alias.active && !clear_color && !((control >> 9) & 0x1)) {
-          last_resolve_.valid = true;
-          last_resolve_.target = target_render->image;
-          last_resolve_.x0 = x0;
-          last_resolve_.y0 = y0;
-          last_resolve_.width = width;
-          last_resolve_.height = height;
-          last_resolve_.address = base_resolved;
-          last_resolve_.image = resolved->image.image;
-          last_resolve_.revision = resolved->revision;
-          last_resolve_.dx = dx;
-          last_resolve_.dy = dy;
-          last_resolve_.drawn = draws_ ? draws_->Drawn() : 0;
-          last_resolve_.transfers = edram4_transfers_all_;
-          last_resolve_.restored = restored_pixels_;
-          last_resolve_.edram_version = edram4_version_;
-        }
+        RememberColor();
+        AliasCandidate();
       }
       }
       }

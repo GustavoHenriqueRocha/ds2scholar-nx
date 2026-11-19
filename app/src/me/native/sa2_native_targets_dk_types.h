@@ -39,6 +39,7 @@
 #include "../me_shader_identity.h"
 #include "../sa2_render_mode.h"
 #include "sa2_native_dk_shaders.h"  // dkshaders::Id (region 07, generated)
+#include "sa2_native_dk_copy_rules.h"  // ds2_skip_repeated_color_resolve, ds2_copy_dma_as_draw
 
 #include <rex/cvar.h>
 #include <rex/platform.h>
@@ -131,6 +132,8 @@ REXCVAR_DECLARE(bool, ds2_dynamic_resolution_keep);
 REXCVAR_DECLARE(bool, ds2_7e3_r11g11b10);
 REXCVAR_DECLARE(bool, ds2_resolve_7e3_direct);
 REXCVAR_DECLARE(bool, ds2_skip_repeated_depth_resolve);
+REXCVAR_DECLARE(bool, ds2_skip_repeated_color_resolve);
+REXCVAR_DECLARE(bool, ds2_copy_dma_as_draw);
 REXCVAR_DECLARE(bool, ds2_resolve_bias_rgba8);
 REXCVAR_DECLARE(bool, ds2_resolve_clip);
 REXCVAR_DECLARE(int32_t, sa2_diag_trace_from_s);

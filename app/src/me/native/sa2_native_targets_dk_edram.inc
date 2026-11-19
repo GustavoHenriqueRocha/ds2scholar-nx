@@ -76,6 +76,12 @@
   };
   std::unordered_map<uint32_t, LastDepthResolve> last_depth_resolves_;
   uint64_t ds2_depth_resolves_skipped_ = 0, ds2_depth_resolves_skipped_report_ = 0;
+  // ds2_skip_repeated_color_resolve: the last real color resolve into each address (erased by any other resolve into
+  // it that is not skipped, so a path that did not record leaves nothing to match).
+  std::unordered_map<uint32_t, ColorResolveKey> last_color_resolves_;
+  uint64_t ds2_color_resolves_skipped_ = 0, ds2_color_resolves_skipped_report_ = 0;
+  // ds2_copy_dma_as_draw: RGBA16F resolves drawn through RGBA16_Uint views (part of resolve_draws_).
+  uint64_t ds2_resolve_draws_raw64_ = 0, ds2_resolve_draws_raw64_report_ = 0;
   bool storage_unorm10_ = false;  // ds2-nx: pipeline 10 exists
 
   bool ResolverWithBias(Image& source, Image& target, int32_t sx, int32_t sy,

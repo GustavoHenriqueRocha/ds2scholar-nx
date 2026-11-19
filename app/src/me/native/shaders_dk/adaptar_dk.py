@@ -27,7 +27,8 @@ FONTES = os.path.join(AQUI, "..", "shaders")
 R11 = "r11f_g11f_b10f"
 
 # (module name, source in ../shaders, defines). The base list is app/CMakeLists.txt's foreach(_shader ...) plus
-# me_edram_depth_1x_to_depth_msaa2 (outside the CMake list: compiled for completeness, unused by the Vulkan code);
+# me_edram_depth_1x_to_depth_msaa2 (outside the CMake list: compiled for completeness, unused by the Vulkan code) and
+# ds2_resolve_copy_raw64 (deko3d only: ds2_copy_dma_as_draw);
 # the _r11 ones are DS2_R11_VARIANTS; the ramp ones are the 8 combinations the output pass can ask for
 # (sa2_native_targets.cpp:1729-1737: exact = index bit 0, FXAA = index bit 1, quality = ds2_output_fxaa_quality;
 # kGraduacion is always false there).
@@ -41,7 +42,7 @@ me_edram_rgba8_to_raw64.comp me_edram_raw64_to_16f.comp me_edram_16f_to_raw64.co
 me_edram_depth_to_raw64.comp me_edram_raw64_to_depth.frag me_depth_resolve_guestspace.comp
 me_depth_resolve_guestspace_msaa2.comp me_edram_stencil_to_buffer.comp me_edram_stencil_msaa2_to_buffer.comp
 me_edram_color_stencil_to_buffer.comp me_edram_color_to_color.frag me_edram_r64_to_r64.frag sa2_resolve_copy.frag
-sa2_depth_resolve_ms.frag me_edram_depth_1x_to_depth_msaa2.frag
+sa2_depth_resolve_ms.frag me_edram_depth_1x_to_depth_msaa2.frag ds2_resolve_copy_raw64.frag
 """.split()
 MODULES = [(f.rsplit(".", 1)[0], f, []) for f in BASE]
 MODULES += [

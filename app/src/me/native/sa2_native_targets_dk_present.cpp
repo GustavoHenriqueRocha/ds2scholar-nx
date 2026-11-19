@@ -1292,6 +1292,16 @@ void TargetsDk::NoteCopy(uint32_t base, uint32_t width, uint32_t height, uint64_
                 "previous report: {}", ds2_depth_resolves_skipped_ - ds2_depth_resolves_skipped_report_);
     ds2_depth_resolves_skipped_report_ = ds2_depth_resolves_skipped_;
   }
+  if (ds2_color_resolves_skipped_ != ds2_color_resolves_skipped_report_) {
+    REXLOG_INFO("[native] targets: repeated color resolves skipped (ds2_skip_repeated_color_resolve) since the "
+                "previous report: {}", ds2_color_resolves_skipped_ - ds2_color_resolves_skipped_report_);
+    ds2_color_resolves_skipped_report_ = ds2_color_resolves_skipped_;
+  }
+  if (ds2_resolve_draws_raw64_ != ds2_resolve_draws_raw64_report_) {
+    REXLOG_INFO("[native] targets: RGBA16F resolves drawn instead of copied (ds2_copy_dma_as_draw) since the previous "
+                "report: {} (included in the resolves drawn below)", ds2_resolve_draws_raw64_ - ds2_resolve_draws_raw64_report_);
+    ds2_resolve_draws_raw64_report_ = ds2_resolve_draws_raw64_;
+  }
   if (resolve_draws_ != resolve_draws_report_ || resolve_draws_declined_ != resolve_draws_declined_report_) {
     REXLOG_INFO("[native] targets: resolves drawn on the 3D engine (sa2_gpu_resolve_draw) since the previous "
                 "report: {}, copied as before: {}", resolve_draws_ - resolve_draws_report_,

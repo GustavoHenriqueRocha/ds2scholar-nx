@@ -10,6 +10,7 @@ namespace sa2::native::dkshaders {
 enum Id : uint32_t {
   kDs2Resolve7e3AsUnorm10,  // ds2_resolve_7e3_as_unorm10.comp
   kDs2Resolve7e3AsUnorm10R11,  // ds2_resolve_7e3_as_unorm10_r11.comp
+  kDs2ResolveCopyRaw64,  // ds2_resolve_copy_raw64.frag
   kMeDepthOnlyQuantizeR0,  // me_depth_only_quantize_r0.frag
   kMeDepthOnlyQuantizeR1,  // me_depth_only_quantize_r1.frag
   kMeDepthResolveGuestspace,  // me_depth_resolve_guestspace.comp

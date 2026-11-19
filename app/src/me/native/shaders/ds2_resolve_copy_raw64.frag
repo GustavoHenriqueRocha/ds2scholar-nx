@@ -1,0 +1,17 @@
+#version 450
+
+// ds2-deko3d (ds2_copy_dma_as_draw): a same-format RGBA16F color resolve as one fragment pass on the 3D engine, instead
+// of the copy engine (dkCmdBufCopyImage, which waits for the 3D engine each way). sa2_resolve_copy.frag with integer
+// texels: the source is an R16G16B16A16_UINT view of the RGBA16F texture and the destination an R16G16B16A16_UINT
+// view as the color attachment, so the 64 bits of every texel are copied as they are (NaN payloads, signed zeros and
+// denormals included; nothing goes through a float). Destination texel (x, y) = source texel (x, y) + delta; the
+// viewport and scissor are the destination rectangle (loadOp LOAD keeps the rest of the texture).
+layout(set = 0, binding = 0) uniform usampler2D source;
+layout(push_constant) uniform Constants {
+  ivec2 delta;
+} c;
+layout(location = 0) out uvec4 output_value;
+
+void main() {
+  output_value = texelFetch(source, ivec2(gl_FragCoord.xy) + c.delta, 0);
+}

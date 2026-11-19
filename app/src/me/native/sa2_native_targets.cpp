@@ -364,6 +364,21 @@ REXCVAR_DEFINE_BOOL(ds2_skip_repeated_depth_resolve, false, "DS2",
                     "EDRAM mode 4: a guestspace depth resolve that repeats the previous one into the same texture "
                     "with nothing drawn, cleared or transferred since is skipped (the texture already holds those "
                     "bytes). false = always resolved");
+// ds2_045 (19-11q, console, 2026-11-19): 117B8000 (1280x720, k_2_10_10_10, the direct 7e3 resolve) gets 2 resolves a
+// frame and only one of them has draws before it. The color mirror of ds2_skip_repeated_depth_resolve (deko3d only;
+// rules and test: sa2_native_dk_copy_rules.h, tools/tests/dk_copy_rules_test.cpp).
+REXCVAR_DEFINE_BOOL(ds2_skip_repeated_color_resolve, false, "DS2",
+                    "deko3d, EDRAM mode 4: a color resolve that repeats the previous one into the same texture (same "
+                    "source view, rectangle, destination, formats and path) with nothing drawn, cleared, transferred "
+                    "or restored since and nothing written into the texture is skipped. false = always resolved")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// ds2_045: 5 color resolves a frame still went to the copy engine ("copied as before"): the k_16_16_16_16_FLOAT ones
+// (12552000 64x64, 1255A000..12562000 32x16), which sa2_gpu_resolve_draw's pass declines (RGBA8 only).
+REXCVAR_DEFINE_BOOL(ds2_copy_dma_as_draw, false, "DS2",
+                    "deko3d: same-format RGBA16F color resolves are drawn on the 3D engine through RGBA16_Uint views "
+                    "(the 64 bits of each texel copied as they are) instead of dkCmdBufCopyImage on the copy engine. "
+                    "false = copy engine, as before")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 REXCVAR_DEFINE_BOOL(ds2_resolve_bias_rgba8, true, "DS2",
                     "Native renderer: resolves with an exponent bias into an RGBA8 texture are done (compute, the "
                     "biased value clamped to 0..1). false = rejected (cause 14), as in sa2-nx");

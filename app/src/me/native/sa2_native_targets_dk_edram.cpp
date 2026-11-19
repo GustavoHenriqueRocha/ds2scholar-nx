@@ -1115,13 +1115,19 @@ TargetsDk::PassConversionColorFrag* TargetsDk::EnsureConversionColorFrag(VkForma
       return nullptr;
     }
   }
+  if (variant == 3 && !fs_resolve_copy_raw64_) {  // ds2_copy_dma_as_draw
+    fs_resolve_copy_raw64_ = LoadShader(dkshaders::kDs2ResolveCopyRaw64);
+    if (!fs_resolve_copy_raw64_) {
+      return nullptr;
+    }
+  }
   auto [it, new_value] = passes_conv_color_frag_.try_emplace(uint64_t(uint32_t(format)) | (uint64_t(variant) << 32) |
                                                              (uint64_t(samples > 1 ? samples : 0) << 40));
   PassConversionColorFrag& pass = it->second;
   if (!new_value) return pass.fs ? &pass : nullptr;
-  // A failure of the resolve copy's own pass (variant 2) only declines that path.
+  // A failure of the resolve copy's own pass (variant 2, or 3: ds2_copy_dma_as_draw) only declines that path.
   const auto fail_pass = [&]() -> PassConversionColorFrag* {
-    if (variant != 2) return fail();
+    if (variant != 2 && variant != 3) return fail();
     REXLOG_WARN("[native] targets: the resolve copy pass (sa2_gpu_resolve_draw) could not be created: copies as before");
     return nullptr;
   };
@@ -1130,7 +1136,8 @@ TargetsDk::PassConversionColorFrag* TargetsDk::EnsureConversionColorFrag(VkForma
   // no cull, no blend, RGBA writes, the attachment's samples. deko3d: PassState's defaults plus the samples.
   pass.state.ms.mode = pass.state.ms.rasterizerMode = sa2::dk::FromSamples(samples > 1 ? samples : 1);
   if (sa2::dk::FromVk(format) == DkImageFormat_None) return fail_pass();
-  pass.fs = variant == 2 ? fs_resolve_copy_ : variant ? fs_conv_r64_frag_ : fs_conv_color_frag_;
+  pass.fs = variant == 3 ? fs_resolve_copy_raw64_
+          : variant == 2 ? fs_resolve_copy_ : variant ? fs_conv_r64_frag_ : fs_conv_color_frag_;
   if (!pass.fs) return fail_pass();
   return &pass;
 }
@@ -1138,7 +1145,16 @@ TargetsDk::PassConversionColorFrag* TargetsDk::EnsureConversionColorFrag(VkForma
 bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32_t sy, uint32_t dx, uint32_t dy,
                                  uint32_t width, uint32_t height) {
   if (!g_resolve_draw.active || conv_color_frag_failed_ || sampler_depth_edram_ == UINT32_MAX) return false;
-  if (source.format != VK_FORMAT_R8G8B8A8_UNORM || target.format != VK_FORMAT_R8G8B8A8_UNORM ||
+  // ds2_copy_dma_as_draw: RGBA16F to RGBA16F too, through RGBA16_Uint views (sa2_native_dk_copy_rules.h).
+  const auto texel = [](VkFormat f) {
+    return f == VK_FORMAT_R8G8B8A8_UNORM ? CopyTexel::kRgba8Unorm
+         : f == VK_FORMAT_R16G16B16A16_SFLOAT ? CopyTexel::kRgba16Float : CopyTexel::kOther;
+  };
+  static const bool dma_as_draw = REXCVAR_GET(ds2_copy_dma_as_draw);  // kInitOnly
+  const ResolveDrawKind kind = ColorResolveDrawKind(texel(source.format), texel(target.format), dma_as_draw,
+                                                    raw64_edram_supported_);
+  const bool raw64 = kind == ResolveDrawKind::kRaw64;
+  if (kind == ResolveDrawKind::kNone ||
       source.image == target.image || !sa2::dk::Alive(source.image) || !sa2::dk::Alive(target.image) ||
       !width || !height ||
       source.guest_width || source.guest_height || target.guest_width || target.guest_height ||
@@ -1151,8 +1167,12 @@ bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32
     ++resolve_draws_declined_;
     return false;
   }
-  PassConversionColorFrag* pass = EnsureConversionColorFrag(VK_FORMAT_R8G8B8A8_UNORM, 2);
-  if (!pass) {
+  PassConversionColorFrag* pass = raw64 ? EnsureConversionColorFrag(VK_FORMAT_R16G16B16A16_UINT, 3)
+                                         : EnsureConversionColorFrag(VK_FORMAT_R8G8B8A8_UNORM, 2);
+  // raw64: both views reinterpret the RGBA16F texel as RGBA16_Uint (same 8 bytes; the EDRAM r64 passes do the same).
+  const DkImageView source_view = raw64 ? GetViewRaw64EDRAM4(source) : sa2::dk::View(source.image);
+  const DkImageView color_target = raw64 ? GetViewRaw64RTEDRAM4(target) : sa2::dk::View(target.image);
+  if (!pass || !source_view.pImage || !color_target.pImage) {
     ++resolve_draws_declined_;
     return false;
   }
@@ -1166,7 +1186,7 @@ bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32
     }
   }
   WorkSlot& slot = slots_[slot_];
-  const uint32_t descriptor_source = PushDescriptor(sa2::dk::View(source.image));
+  const uint32_t descriptor_source = PushDescriptor(source_view);
   if (descriptor_source == UINT32_MAX) {
     ++resolve_draws_declined_;
     return false;
@@ -1186,7 +1206,6 @@ bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32
   // Render pass start (dependency 0, exact masks for variant 2: attachment, transfer and shader writes before; the
   // copy and compute writes end with their own barriers on deko3d, so the 3D engine's are what is left).
   sa2::dk::Barrier(commands_work_, Hazard::RenderToSample);
-  const DkImageView color_target = sa2::dk::View(target.image);
   dkCmdBufBindRenderTarget(commands_work_, &color_target, nullptr);
   pass->state.Bind(commands_work_);
   BindNoVerticesDk(commands_work_);
@@ -1201,6 +1220,9 @@ bool TargetsDk::ResolveColorFrag(Image& source, Image& target, int32_t sx, int32
   if (++resolve_draws_ == 1)
     REXLOG_INFO("[native] targets: resolves drawn on the 3D engine (sa2_gpu_resolve_draw): first one {}x{} at "
                 "{},{} -> {},{}", width, height, sx, sy, dx, dy);
+  if (raw64 && ++ds2_resolve_draws_raw64_ == 1)
+    REXLOG_INFO("[native] targets: RGBA16F resolve drawn through RGBA16_Uint views (ds2_copy_dma_as_draw): first one "
+                "{}x{} at {},{} -> {},{}", width, height, sx, sy, dx, dy);
   g_resolve_draw.UseSampled();
   return true;
 }

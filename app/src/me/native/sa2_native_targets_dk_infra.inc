@@ -254,6 +254,7 @@
   // deko3d shape (views on the spot, shaders and pass keys) is the EDRAM region's (as the copies region noted).
   const DkShader* fs_conv_r64_frag_ = nullptr;
   const DkShader* fs_resolve_copy_ = nullptr;  // sa2_gpu_resolve_draw
+  const DkShader* fs_resolve_copy_raw64_ = nullptr;  // ds2_copy_dma_as_draw
   uint64_t resolve_draws_ = 0, resolve_draws_declined_ = 0, resolve_draws_report_ = 0, resolve_draws_declined_report_ = 0;
   // sa2_gpu_resolve_alias (the types are declared with MakeAlias).
   std::unordered_map<uint32_t, AliasResolve> aliases_;  // by the alias's address
